@@ -128,7 +128,7 @@ Workdir живёт дольше Run. Это локальный рабочий д
 
 1. Broker сообщает, что у агента есть непрочитанное (D12).
 2. Если у агента идёт Run по той же задаче, Runtime передаёт новое через `steer`. Иначе ставит агента в очередь (D30).
-3. Runtime проверяет предохранители (§15), создаёт `run_id`, токен, `correlation_id` или наследует его (D41), выбирает сессию.
+3. Runtime проверяет предохранители (§15), создаёт `run_id` и токен, берёт `correlation_id` из сообщения-триггера (D41), выбирает сессию.
 4. Runtime готовит конфиг Pi для Run (§5.4), launcher запускает Pi, Runtime отправляет `prompt` и читает события.
 5. На `agent_settled` Runtime закрывает stdin, отзывает токен, двигает курсор inbox (D49), обновляет статус, пишет Journal.
 
@@ -248,7 +248,7 @@ created_at      # ставит Broker
 in_reply_to     # nullable
 task_id         # nullable
 subject         # optional
-correlation_id  # ставит Broker по токену (D41)
+correlation_id  # ставит Broker, всегда заполнено (D41)
 ```
 
 Правила:
