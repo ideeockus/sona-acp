@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use control_plane_common::broker::{
     InboxBatch, InboxDelivery, Message, MessageBroker, NewMessage, WakeSink,
 };
+use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
 use control_plane_common::registry::{AgentDirectory, Credentials};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, TaskId, Timestamp,
@@ -16,6 +17,7 @@ pub struct SqliteBroker {
     pool: SqlitePool,
     directory: Arc<dyn AgentDirectory>,
     credentials: Arc<dyn Credentials>,
+    journal: Arc<dyn JournalWriter>,
     wake: Arc<dyn WakeSink>,
 }
 
@@ -25,6 +27,7 @@ impl SqliteBroker {
         pool: SqlitePool,
         directory: Arc<dyn AgentDirectory>,
         credentials: Arc<dyn Credentials>,
+        journal: Arc<dyn JournalWriter>,
         wake: Arc<dyn WakeSink>,
     ) -> Result<Self> {
         sqlx::migrate!()
@@ -35,8 +38,21 @@ impl SqliteBroker {
             pool,
             directory,
             credentials,
+            journal,
             wake,
         })
+    }
+
+    /// Records a refused send in Agent Journal: it is an agent action (D13).
+    async fn deny(&self, caller: &Caller, task_id: Option<TaskId>, reason: &str) -> Result<()> {
+        self.journal
+            .record(Event {
+                decision: Some(Decision::Deny),
+                reason: Some(reason.to_owned()),
+                task_id,
+                ..Event::new(caller, Component::Broker, "send_message")
+            })
+            .await
     }
 
     /// Checks that `caller` may write to `to` (D50).
@@ -103,18 +119,22 @@ impl SqliteBroker {
 #[async_trait]
 impl MessageBroker for SqliteBroker {
     async fn send(&self, caller: &Caller, message: NewMessage) -> Result<Message> {
-        self.authorize(caller, &message.to).await?;
+        if let Err(error) = self.authorize(caller, &message.to).await {
+            if let Error::Forbidden(reason) = &error {
+                self.deny(caller, message.task_id, reason).await?;
+            }
+            return Err(error);
+        }
 
         // A Run token must not leave its agent (D24).
-        // TODO(journal): record the rejection once Agent Journal exists.
         for text in [Some(&message.body), message.subject.as_ref()]
             .into_iter()
             .flatten()
         {
             if self.credentials.contains_active_run_token(text).await? {
-                return Err(Error::Forbidden(
-                    "message contains an active Run token".to_owned(),
-                ));
+                let reason = "message contains an active Run token";
+                self.deny(caller, message.task_id, reason).await?;
+                return Err(Error::Forbidden(reason.to_owned()));
             }
         }
 
@@ -262,7 +282,7 @@ impl Row {
                 .transpose()?,
             in_reply_to: self.in_reply_to.as_deref().map(parse).transpose()?,
             correlation_id: parse(&self.correlation_id)?,
-            created_at: Timestamp::from_unix_millis(self.created_at),
+            created_at: Timestamp::from_unix_millis(self.created_at)?,
         })
     }
 }

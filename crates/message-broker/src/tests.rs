@@ -45,6 +45,18 @@ impl Credentials for OneActiveToken {
     }
 }
 
+/// Keeps every recorded event.
+#[derive(Default)]
+struct Recorded(Mutex<Vec<Event>>);
+
+#[async_trait]
+impl JournalWriter for Recorded {
+    async fn record(&self, event: Event) -> Result<()> {
+        self.0.lock().unwrap().push(event);
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct Woken(Mutex<Vec<Alias>>);
 
@@ -57,6 +69,7 @@ impl WakeSink for Woken {
 
 struct Setup {
     broker: SqliteBroker,
+    journal: Arc<Recorded>,
     woken: Arc<Woken>,
 }
 
@@ -92,16 +105,22 @@ async fn setup() -> Setup {
         card("manager", &["coder"]),
         card("coder", &["manager", "user"]),
     ]);
+    let journal = Arc::new(Recorded::default());
     let woken = Arc::new(Woken::default());
     let broker = SqliteBroker::new(
         pool,
         Arc::new(directory),
         Arc::new(OneActiveToken),
+        journal.clone(),
         woken.clone(),
     )
     .await
     .unwrap();
-    Setup { broker, woken }
+    Setup {
+        broker,
+        journal,
+        woken,
+    }
 }
 
 fn agent(name: &str, correlation_id: CorrelationId) -> Caller {
@@ -154,6 +173,12 @@ async fn agent_cannot_message_outside_its_list() {
         .await;
     assert!(matches!(result, Err(Error::Forbidden(_))));
     assert!(s.broker.agents_with_unread().await.unwrap().is_empty());
+
+    let events = s.journal.0.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor, alias("manager"));
+    assert_eq!(events[0].action, "send_message");
+    assert_eq!(events[0].decision, Some(Decision::Deny));
 }
 
 #[tokio::test]
@@ -224,6 +249,9 @@ async fn message_with_active_token_is_rejected() {
         Err(Error::Forbidden(_))
     ));
     assert!(s.woken.0.lock().unwrap().is_empty());
+    let events = s.journal.0.lock().unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|e| e.decision == Some(Decision::Deny)));
 }
 
 #[tokio::test]

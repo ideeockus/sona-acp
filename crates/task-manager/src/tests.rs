@@ -3,6 +3,7 @@ use control_plane_common::registry::{AgentCard, ModelRef, Secret};
 use control_plane_common::tasks::TaskResult;
 use control_plane_common::{CorrelationId, RunId};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::sync::Mutex;
 
 const LEAKED: &str = "sona_plane_rt_leaked";
 
@@ -53,7 +54,23 @@ impl Credentials for OneActiveToken {
     }
 }
 
+/// Keeps every recorded event.
+#[derive(Default)]
+struct Recorded(Mutex<Vec<Event>>);
+
+#[async_trait]
+impl JournalWriter for Recorded {
+    async fn record(&self, event: Event) -> Result<()> {
+        self.0.lock().unwrap().push(event);
+        Ok(())
+    }
+}
+
 async fn manager() -> SqliteTaskManager {
+    manager_recording().await.0
+}
+
+async fn manager_recording() -> (SqliteTaskManager, Arc<Recorded>) {
     // One connection that never closes: every connection gets its own in-memory database.
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -65,9 +82,16 @@ async fn manager() -> SqliteTaskManager {
     let agents = ["manager", "coder", "tester", "stranger"]
         .map(alias)
         .to_vec();
-    SqliteTaskManager::new(pool, Arc::new(Directory(agents)), Arc::new(OneActiveToken))
-        .await
-        .unwrap()
+    let journal = Arc::new(Recorded::default());
+    let manager = SqliteTaskManager::new(
+        pool,
+        Arc::new(Directory(agents)),
+        Arc::new(OneActiveToken),
+        journal.clone(),
+    )
+    .await
+    .unwrap();
+    (manager, journal)
 }
 
 fn alias(name: &str) -> Alias {
@@ -265,7 +289,7 @@ async fn empty_or_repeated_updates_are_rejected() {
 
 #[tokio::test]
 async fn texts_with_active_token_are_rejected() {
-    let m = manager().await;
+    let (m, journal) = manager_recording().await;
     let mut leaky = new_task();
     leaky.context = format!("token: {LEAKED}");
     assert!(matches!(
@@ -293,6 +317,21 @@ async fn texts_with_active_token_are_rejected() {
         m.update_task(&agent("coder"), task.id, leaky_note).await,
         Err(Error::Forbidden(_))
     ));
+
+    let events = journal.0.lock().unwrap();
+    let recorded: Vec<_> = events
+        .iter()
+        .map(|e| (e.action.as_str(), e.task_id, e.decision))
+        .collect();
+    let deny = Some(Decision::Deny);
+    assert_eq!(
+        recorded,
+        [
+            ("create_task", None, deny),
+            ("update_task", Some(task.id), deny),
+            ("update_task", Some(task.id), deny),
+        ]
+    );
 }
 
 #[tokio::test]

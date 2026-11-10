@@ -1,6 +1,7 @@
 //! Task Manager on SQLite: tasks, their status, result and history.
 
 use async_trait::async_trait;
+use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
 use control_plane_common::registry::{AgentDirectory, Credentials};
 use control_plane_common::tasks::{
     Change, HistoryEntry, NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView,
@@ -16,6 +17,7 @@ pub struct SqliteTaskManager {
     pool: SqlitePool,
     directory: Arc<dyn AgentDirectory>,
     credentials: Arc<dyn Credentials>,
+    journal: Arc<dyn JournalWriter>,
 }
 
 impl SqliteTaskManager {
@@ -24,6 +26,7 @@ impl SqliteTaskManager {
         pool: SqlitePool,
         directory: Arc<dyn AgentDirectory>,
         credentials: Arc<dyn Credentials>,
+        journal: Arc<dyn JournalWriter>,
     ) -> Result<Self> {
         sqlx::migrate!()
             .run(&pool)
@@ -33,6 +36,7 @@ impl SqliteTaskManager {
             pool,
             directory,
             credentials,
+            journal,
         })
     }
 
@@ -61,14 +65,26 @@ impl SqliteTaskManager {
         }
     }
 
-    /// A Run token must not leave its agent (D24).
-    // TODO(journal): record the rejection once Agent Journal exists.
-    async fn reject_tokens(&self, texts: &[&str]) -> Result<()> {
+    /// A Run token must not leave its agent (D24). A refusal is recorded in Agent Journal.
+    async fn reject_tokens(
+        &self,
+        caller: &Caller,
+        action: &str,
+        task_id: Option<TaskId>,
+        texts: &[&str],
+    ) -> Result<()> {
         for text in texts {
             if self.credentials.contains_active_run_token(text).await? {
-                return Err(Error::Forbidden(
-                    "text contains an active Run token".to_owned(),
-                ));
+                let reason = "text contains an active Run token";
+                self.journal
+                    .record(Event {
+                        decision: Some(Decision::Deny),
+                        reason: Some(reason.to_owned()),
+                        task_id,
+                        ..Event::new(caller, Component::TaskManager, action)
+                    })
+                    .await?;
+                return Err(Error::Forbidden(reason.to_owned()));
             }
         }
         Ok(())
@@ -83,7 +99,8 @@ impl TaskManager for SqliteTaskManager {
                 "adapter {alias} is not supported yet"
             )));
         }
-        self.reject_tokens(&[&new.title, &new.context]).await?;
+        self.reject_tokens(caller, "create_task", None, &[&new.title, &new.context])
+            .await?;
         if let Some(parent) = new.parent_id {
             self.visible_task(caller, parent).await?;
         }
@@ -141,7 +158,7 @@ impl TaskManager for SqliteTaskManager {
             .into_iter()
             .map(|(at, who, change)| {
                 Ok(HistoryEntry {
-                    at: Timestamp::from_unix_millis(at),
+                    at: Timestamp::from_unix_millis(at)?,
                     who: parse(&who)?,
                     change: from_json(&change)?,
                 })
@@ -176,11 +193,13 @@ impl TaskManager for SqliteTaskManager {
         if let Some(result) = update.result {
             let mut texts = vec![result.text.as_str()];
             texts.extend(result.links.iter().map(String::as_str));
-            self.reject_tokens(&texts).await?;
+            self.reject_tokens(caller, "update_task", Some(id), &texts)
+                .await?;
             changes.push(Change::Result { result });
         }
         if let Some(text) = update.note {
-            self.reject_tokens(&[&text]).await?;
+            self.reject_tokens(caller, "update_task", Some(id), &[&text])
+                .await?;
             changes.push(Change::Note { text });
         }
         if changes.is_empty() {
@@ -260,11 +279,11 @@ impl Row {
             context: self.context,
             status: from_json(&format!("\"{}\"", self.status))?,
             creator: parse(&self.creator)?,
-            created_at: Timestamp::from_unix_millis(self.created_at),
+            created_at: Timestamp::from_unix_millis(self.created_at)?,
             parent_id: self.parent_id.as_deref().map(parse).transpose()?,
             assignee: self.assignee.as_deref().map(parse).transpose()?,
             members: from_json(&self.members)?,
-            deadline: self.deadline.map(Timestamp::from_unix_millis),
+            deadline: self.deadline.map(Timestamp::from_unix_millis).transpose()?,
             result: self.result.as_deref().map(from_json).transpose()?,
         })
     }

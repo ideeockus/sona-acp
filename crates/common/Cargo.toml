@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+jiff.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

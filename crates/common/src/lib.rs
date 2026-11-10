@@ -9,6 +9,7 @@ mod ids;
 mod timestamp;
 
 pub mod broker;
+pub mod journal;
 pub mod registry;
 pub mod tasks;
 
