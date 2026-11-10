@@ -9,6 +9,7 @@ mod ids;
 mod timestamp;
 
 pub mod broker;
+pub mod registry;
 
 pub use alias::{Alias, InvalidAlias};
 pub use caller::Caller;

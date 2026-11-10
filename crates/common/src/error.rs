@@ -9,6 +9,8 @@ use thiserror::Error;
 #[derive(Clone, Debug, PartialEq, Eq, Error, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum Error {
+    #[error("unauthenticated")]
+    Unauthenticated,
     #[error("forbidden: {0}")]
     Forbidden(String),
     #[error("not found: {0}")]
