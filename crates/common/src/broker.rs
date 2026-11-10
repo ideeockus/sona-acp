@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn new_message_cannot_carry_a_sender() {
         let forged = r#"{"to":"coder","body":"hi","subject":null,"task_id":null,
-                         "in_reply_to":null,"from":"radmir"}"#;
+                         "in_reply_to":null,"from":"user"}"#;
         let message: NewMessage = serde_json::from_str(forged).unwrap();
         let json = serde_json::to_value(&message).unwrap();
         assert!(json.get("from").is_none());

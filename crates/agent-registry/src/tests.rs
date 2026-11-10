@@ -20,7 +20,7 @@ fn alias(name: &str) -> Alias {
 
 fn operator() -> Caller {
     Caller::Operator {
-        alias: alias("radmir"),
+        alias: alias("user"),
     }
 }
 
@@ -125,7 +125,7 @@ async fn aliases_are_unique_across_kinds() {
 #[tokio::test]
 async fn operator_credential_authenticates() {
     let registry = registry().await;
-    let secret = registry.create_operator(&alias("radmir")).await.unwrap();
+    let secret = registry.create_operator(&alias("user")).await.unwrap();
     assert!(secret.expose().starts_with(OPERATOR_PREFIX));
     assert_eq!(
         registry.authenticate(secret.expose()).await.unwrap(),
@@ -164,10 +164,10 @@ async fn unknown_credential_is_rejected() {
 #[tokio::test]
 async fn only_agents_get_run_tokens() {
     let registry = registry().await;
-    registry.create_operator(&alias("radmir")).await.unwrap();
+    registry.create_operator(&alias("user")).await.unwrap();
     assert!(matches!(
         registry
-            .issue_run_token(&alias("radmir"), RunId::new(), CorrelationId::new())
+            .issue_run_token(&alias("user"), RunId::new(), CorrelationId::new())
             .await,
         Err(Error::NotFound(_))
     ));
@@ -191,7 +191,7 @@ async fn revoked_run_token_stops_working() {
 #[tokio::test]
 async fn startup_revocation_keeps_the_operator() {
     let registry = registry_with_coder().await;
-    let operator_secret = registry.create_operator(&alias("radmir")).await.unwrap();
+    let operator_secret = registry.create_operator(&alias("user")).await.unwrap();
     let token = registry
         .issue_run_token(&alias("coder"), RunId::new(), CorrelationId::new())
         .await

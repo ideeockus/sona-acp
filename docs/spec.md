@@ -272,14 +272,17 @@ task_id
 title, context
 status          # open → in_progress → done / cancelled, плюс needs_owner
 creator, created_at
+assignee        # nullable: один ответственный, двигает задачу дальше
+members         # остальные агенты, работающие над задачей
 parent_id       # nullable: подзадачи
 deadline        # nullable, по умолчанию None (D26)
-result          # текст, файлы, внешние ссылки
+result          # текст и ссылки; файлы — в пространстве задачи (D56)
 history         # append-only: when, who, what
 ```
 
+- Видят задачу и пишут в неё участники — создатель, `assignee`, `members` — и оператор (D72).
 - Автора и время записей ставит Task Manager по токену.
-- Завершают задачу Manager или оператор.
+- `done` и `cancelled` ставят только создатель или оператор: задачу создаёт Manager, он её и закрывает. Закрытая задача не меняется.
 - Задача сама не будит агентов, будят сообщения.
 - `needs_owner` — задача ждёт решения оператора. Когда Manager к нему обращается — O29.
 

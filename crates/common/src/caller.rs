@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn alias_is_available_for_every_kind() {
-        let alias: Alias = "radmir".parse().unwrap();
+        let alias: Alias = "user".parse().unwrap();
         let caller = Caller::Operator {
             alias: alias.clone(),
         };

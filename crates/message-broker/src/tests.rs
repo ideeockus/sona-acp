@@ -90,7 +90,7 @@ async fn setup() -> Setup {
         .unwrap();
     let directory = Directory(vec![
         card("manager", &["coder"]),
-        card("coder", &["manager", "radmir"]),
+        card("coder", &["manager", "user"]),
     ]);
     let woken = Arc::new(Woken::default());
     let broker = SqliteBroker::new(
@@ -114,7 +114,7 @@ fn agent(name: &str, correlation_id: CorrelationId) -> Caller {
 
 fn operator() -> Caller {
     Caller::Operator {
-        alias: alias("radmir"),
+        alias: alias("user"),
     }
 }
 
@@ -149,7 +149,7 @@ async fn agent_cannot_message_outside_its_list() {
         .broker
         .send(
             &agent("manager", CorrelationId::new()),
-            to("radmir", "hi", None),
+            to("user", "hi", None),
         )
         .await;
     assert!(matches!(result, Err(Error::Forbidden(_))));
@@ -178,7 +178,7 @@ async fn operator_reply_stays_in_the_chain() {
     let chain = CorrelationId::new();
     let question = s
         .broker
-        .send(&agent("coder", chain), to("radmir", "which db?", None))
+        .send(&agent("coder", chain), to("user", "which db?", None))
         .await
         .unwrap();
     let mut answer = to("coder", "sqlite", None);
@@ -232,7 +232,7 @@ async fn message_to_the_operator_wakes_nobody() {
     s.broker
         .send(
             &agent("coder", CorrelationId::new()),
-            to("radmir", "done", None),
+            to("user", "done", None),
         )
         .await
         .unwrap();
