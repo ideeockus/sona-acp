@@ -69,7 +69,7 @@ pub trait InboxDelivery: Send + Sync {
 
     /// Marks a session's messages up to and including `up_to` as read (D49).
     ///
-    /// Relies on `MessageId` ordering, which holds within one process.
+    /// The cursor follows delivery order and never moves back.
     async fn advance_cursor(
         &self,
         agent: &Alias,
