@@ -12,8 +12,10 @@ description = "Sona Agents Plane: a control plane for long-lived agents on Pi."
 
 [workspace.dependencies]
 async-trait = "0.1"
+axum = "0.8"
 control-plane-common = { path = "crates/common" }
 flate2 = "1"
+http-body-util = "0.1"
 jiff = { version = "0.2", features = ["serde"] }
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
@@ -22,4 +24,6 @@ sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite"] }
 thiserror = "2"
 tokio = "1"
+tower = "0.5"
+tracing = "0.1"
 uuid = { version = "1", features = ["v7", "serde"] }
