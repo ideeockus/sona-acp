@@ -99,3 +99,30 @@ async fn writer_sends_one_line_per_command() {
         "{\"type\":\"steer\",\"message\":\"also\"}\n{\"type\":\"abort\"}\n"
     );
 }
+
+#[tokio::test]
+async fn reader_survives_cancellation_mid_line() {
+    use tokio::io::AsyncWriteExt;
+    use tokio::time::{Duration, timeout};
+
+    let (mut pi, stdout) = tokio::io::duplex(64);
+    let mut reader = EventReader::new(stdout);
+
+    pi.write_all(br#"{"type":"agent_"#).await.unwrap();
+    // The read is cancelled while half a line is buffered.
+    assert!(
+        timeout(Duration::from_millis(20), reader.next())
+            .await
+            .is_err()
+    );
+
+    pi.write_all(b"settled\"}\n").await.unwrap();
+    assert_eq!(reader.next().await.unwrap(), Some(Event::AgentSettled));
+}
+
+#[tokio::test]
+async fn last_line_without_line_feed_is_read() {
+    let mut reader = EventReader::new(r#"{"type":"agent_settled"}"#.as_bytes());
+    assert_eq!(reader.next().await.unwrap(), Some(Event::AgentSettled));
+    assert_eq!(reader.next().await.unwrap(), None);
+}

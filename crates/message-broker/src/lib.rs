@@ -178,9 +178,7 @@ impl MessageBroker for SqliteBroker {
     }
 
     async fn read_messages(&self, caller: &Caller, session: SessionKey) -> Result<Vec<Message>> {
-        let mut unread = self.unread(caller.alias()).await?;
-        unread.retain(|m| m.session() == session);
-        Ok(unread)
+        self.unread_in(caller.alias(), session).await
     }
 }
 
@@ -219,6 +217,12 @@ impl InboxDelivery for SqliteBroker {
             session,
             messages: unread,
         }))
+    }
+
+    async fn unread_in(&self, agent: &Alias, session: SessionKey) -> Result<Vec<Message>> {
+        let mut unread = self.unread(agent).await?;
+        unread.retain(|m| m.session() == session);
+        Ok(unread)
     }
 
     async fn advance_cursor(

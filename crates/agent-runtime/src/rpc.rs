@@ -85,20 +85,22 @@ impl<R: AsyncRead + Unpin> EventReader<R> {
     }
 
     /// The next record, or `None` once Pi closes stdout.
+    ///
+    /// Cancel-safe, so it can wait in `select!`: a partly read line stays buffered
+    /// and the next call continues it.
     pub async fn next(&mut self) -> Result<Option<Event>> {
         loop {
-            self.line.clear();
             // Split on LF only: U+2028 and U+2029 are valid inside JSON strings.
-            if self
+            let read = self
                 .stdout
                 .read_until(b'\n', &mut self.line)
                 .await
-                .map_err(io)?
-                == 0
-            {
+                .map_err(io)?;
+            if read == 0 && self.line.is_empty() {
                 return Ok(None);
             }
-            let record = self.line.trim_ascii_end();
+            let line = std::mem::take(&mut self.line);
+            let record = line.trim_ascii_end();
             if record.is_empty() {
                 continue;
             }

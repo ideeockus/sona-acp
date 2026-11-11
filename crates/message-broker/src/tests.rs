@@ -320,6 +320,13 @@ async fn reading_is_per_session_and_keeps_the_cursor() {
         .await
         .unwrap();
     assert_eq!(chain, [no_task]);
+    assert_eq!(
+        s.broker
+            .unread_in(&alias("coder"), SessionKey::Task(task))
+            .await
+            .unwrap(),
+        on_task
+    );
 }
 
 #[tokio::test]

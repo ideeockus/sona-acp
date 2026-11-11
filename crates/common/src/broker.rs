@@ -72,6 +72,9 @@ pub trait InboxDelivery: Send + Sync {
     // Deliberately simple for one active Run per agent; revisit with parallel Runs (D57).
     async fn next_batch(&self, agent: &Alias) -> Result<Option<InboxBatch>>;
 
+    /// Unread messages of one session, oldest first. What an active Run may get by `steer`.
+    async fn unread_in(&self, agent: &Alias, session: SessionKey) -> Result<Vec<Message>>;
+
     /// Marks a session's messages up to and including `up_to` as read (D49).
     ///
     /// The cursor follows delivery order and never moves back.
