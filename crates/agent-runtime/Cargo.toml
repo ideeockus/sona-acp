@@ -1,0 +1,18 @@
+[package]
+name = "control-plane-agent-runtime"
+description = "Agent Runtime: launching Pi and driving Runs over its RPC protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+control-plane-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "process"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt"] }
