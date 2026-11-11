@@ -292,7 +292,7 @@ fn setup(scripts: Vec<Script>) -> Setup {
     });
     let config = RuntimeConfig {
         data_dir: data_dir.clone(),
-        extension: PathBuf::from("/ext/sona.ts"),
+        extension: PathBuf::from("/opt/sona/extension"),
         api_url: "http://api.test".to_owned(),
         models_json: None,
         provider_env: vec![("FAKE_KEY".to_owned(), "k".to_owned())],
@@ -383,7 +383,8 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
     assert_eq!(arg_after(&spec, "--session-id"), format!("task-{task}"));
     assert_eq!(arg_after(&spec, "--model"), "fake/fake-1");
     assert_eq!(arg_after(&spec, "--tools"), "read,send_message");
-    assert_eq!(arg_after(&spec, "-e"), "/ext/sona.ts");
+    assert_eq!(arg_after(&spec, "-e"), "/agent/extension");
+    assert_eq!(arg_after(&spec, "--session-dir"), "/agent/sessions");
     assert_eq!(arg_after(&spec, "--system-prompt"), "You are @coder.");
     let context = arg_after(&spec, "--append-system-prompt");
     assert!(context.contains("- @manager: Coordinates work\n- @user\n"));
@@ -398,8 +399,24 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
     assert!(env_of(&spec, "SONA_PLANE_RUN_TOKEN").starts_with("sona_plane_rt_"));
     assert_eq!(env_of(&spec, "SONA_PLANE_API_URL"), "http://api.test");
     assert_eq!(env_of(&spec, "FAKE_KEY"), "k");
-    assert_eq!(spec.workdir, s.data_dir.join("agents/coder/work"));
-    assert!(spec.workdir.is_dir());
+    assert_eq!(env_of(&spec, "PI_CODING_AGENT_DIR"), "/agent/pi");
+    let mounted = |inside: &str| {
+        let mount = spec.mounts.iter().find(|m| m.inside == inside).unwrap();
+        (mount.host.clone(), mount.read_only)
+    };
+    assert_eq!(
+        mounted("/work"),
+        (s.data_dir.join("agents/coder/work"), false)
+    );
+    assert_eq!(
+        mounted("/agent/sessions"),
+        (s.data_dir.join("agents/coder/sessions"), false)
+    );
+    assert_eq!(
+        mounted("/agent/extension"),
+        (PathBuf::from("/opt/sona/extension"), true)
+    );
+    assert!(s.data_dir.join("agents/coder/work").is_dir());
 
     // The prompt is a notification only: Pi reads the messages itself (D80).
     let received = s.pi.received.lock().unwrap().clone();
@@ -412,7 +429,8 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
         *s.tokens.issued.lock().unwrap(),
         *s.tokens.revoked.lock().unwrap()
     );
-    let pi_dir = PathBuf::from(env_of(&spec, "PI_CODING_AGENT_DIR"));
+    // The per-Run config is gone after the Run (D81).
+    let (pi_dir, _) = mounted("/agent/pi");
     assert!(pi_dir.starts_with(s.data_dir.join("runs")));
     assert!(!pi_dir.exists());
     assert_eq!(

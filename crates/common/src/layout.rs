@@ -5,3 +5,12 @@ pub const WORKDIR: &str = "/work";
 
 /// The agent's skills. Read-only (D59).
 pub const SKILLS_DIR: &str = "/agent/skills";
+
+/// Pi sessions of the agent. Read-write.
+pub const SESSIONS_DIR: &str = "/agent/sessions";
+
+/// Pi's config for one Run, also its home (D62). Read-write.
+pub const PI_DIR: &str = "/agent/pi";
+
+/// Our Pi extension. Read-only.
+pub const EXTENSION_DIR: &str = "/agent/extension";

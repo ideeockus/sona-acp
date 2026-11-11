@@ -1,20 +1,31 @@
-//! Against a real Pi. Needs `pi` on PATH, so CI skips it:
-//! `cargo test -p control-plane-agent-runtime -- --ignored`.
+//! Against a real Pi in the agent image. Needs Docker and the image, so CI skips it:
+//!
+//! ```text
+//! docker build -t sona-plane-agent:dev images/agent
+//! cargo test -p control-plane-agent-runtime -- --ignored
+//! ```
 
-use control_plane_agent_runtime::launcher::{Launcher, LocalLauncher, RunSpec};
+use control_plane_agent_runtime::launcher::{DockerLauncher, Launcher, Mount, RunSpec};
 use control_plane_agent_runtime::rpc::{Command, CommandWriter, Event, EventReader};
+use control_plane_common::RunId;
 use std::path::PathBuf;
 
 #[tokio::test]
-#[ignore = "needs Pi installed"]
-async fn real_pi_answers_over_rpc() {
+#[ignore = "needs Docker and the sona-plane-agent:dev image"]
+async fn real_pi_answers_over_rpc_in_a_container() {
     // Everything Pi writes stays under Cargo's target dir.
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("pi");
-    let workdir = root.join("work");
-    std::fs::create_dir_all(&workdir).unwrap();
-    let dir = |name: &str| root.join(name).to_string_lossy().into_owned();
-
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("pi-{}", RunId::new()));
+    let mount = |name: &str, inside: &str| {
+        let host = root.join(name);
+        std::fs::create_dir_all(&host).unwrap();
+        Mount {
+            host,
+            inside: inside.to_owned(),
+            read_only: false,
+        }
+    };
     let spec = RunSpec {
+        name: format!("sona-test-{}", RunId::new()),
         args: [
             "--mode",
             "rpc",
@@ -24,16 +35,18 @@ async fn real_pi_answers_over_rpc() {
         ]
         .map(String::from)
         .to_vec(),
-        env: vec![
-            ("HOME".to_owned(), dir("home")),
-            ("PI_CODING_AGENT_DIR".to_owned(), dir("agent")),
-            ("PI_OFFLINE".to_owned(), "1".to_owned()),
-            ("PI_SKIP_VERSION_CHECK".to_owned(), "1".to_owned()),
-            ("PI_TELEMETRY".to_owned(), "0".to_owned()),
-        ],
-        workdir,
+        env: [
+            ("HOME", "/agent/pi"),
+            ("PI_CODING_AGENT_DIR", "/agent/pi"),
+            ("PI_OFFLINE", "1"),
+            ("PI_SKIP_VERSION_CHECK", "1"),
+            ("PI_TELEMETRY", "0"),
+        ]
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .to_vec(),
+        mounts: vec![mount("work", "/work"), mount("pi", "/agent/pi")],
     };
-    let launched = LocalLauncher::new("pi", std::env::var("PATH").unwrap())
+    let launched = DockerLauncher::new("sona-plane-agent:dev")
         .start(spec)
         .await
         .unwrap();

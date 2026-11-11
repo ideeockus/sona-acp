@@ -1,11 +1,12 @@
 //! One Run: issue a token, start Pi, deliver messages until it settles, clean up.
 
 use crate::context::{notification, run_context};
-use crate::launcher::RunSpec;
+use crate::launcher::{Mount, RunSpec};
 use crate::rpc::{Command, CommandWriter, Event, EventReader};
 use crate::runtime::Inner;
 use control_plane_common::broker::{InboxBatch, Message};
 use control_plane_common::journal::{Component, Event as JournalEvent, Outcome};
+use control_plane_common::layout::{EXTENSION_DIR, PI_DIR, SESSIONS_DIR, WORKDIR};
 use control_plane_common::registry::{AgentCard, Secret};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId,
@@ -24,6 +25,7 @@ struct Run {
     caller: Caller,
     card: AgentCard,
     batch: InboxBatch,
+    run_id: RunId,
     correlation_id: CorrelationId,
     /// Per-Run files, removed afterwards (D81).
     dir: PathBuf,
@@ -57,6 +59,7 @@ impl Inner {
             },
             card: self.directory.agent(agent).await?,
             batch,
+            run_id,
             correlation_id,
             dir: self.config.data_dir.join("runs").join(run_id.to_string()),
         };
@@ -116,10 +119,21 @@ impl Inner {
             run.correlation_id,
             &self.addressees(&run.card).await,
         );
+        let mount = |host: &Path, inside: &str, read_only| Mount {
+            host: host.to_path_buf(),
+            inside: inside.to_owned(),
+            read_only,
+        };
         let spec = RunSpec {
-            args: self.pi_args(run, &sessions, context),
-            env: self.pi_env(token, &pi_dir),
-            workdir: work,
+            name: format!("sona-run-{}", run.run_id),
+            args: self.pi_args(run, context),
+            env: self.pi_env(token),
+            mounts: vec![
+                mount(&work, WORKDIR, false),
+                mount(&sessions, SESSIONS_DIR, false),
+                mount(&pi_dir, PI_DIR, false),
+                mount(&self.config.extension, EXTENSION_DIR, true),
+            ],
         };
 
         let launched = self.launcher.start(spec).await?;
@@ -195,8 +209,8 @@ impl Inner {
         }
     }
 
-    /// Pi's command line for this agent and session (D62, D80).
-    fn pi_args(&self, run: &Run, sessions: &Path, context: String) -> Vec<String> {
+    /// Pi's command line for this agent and session, in container paths (D62, D80).
+    fn pi_args(&self, run: &Run, context: String) -> Vec<String> {
         let card = &run.card;
         [
             "--mode",
@@ -204,7 +218,7 @@ impl Inner {
             "--model",
             &format!("{}/{}", card.model.provider, card.model.id),
             "--session-dir",
-            &path(sessions),
+            SESSIONS_DIR,
             "--session-id",
             &run.batch.session.to_string(),
             "--system-prompt",
@@ -216,7 +230,7 @@ impl Inner {
             &card.allow_tools.join(","),
             "--no-extensions",
             "-e",
-            &path(&self.config.extension),
+            EXTENSION_DIR,
             "--no-skills",
             "--no-context-files",
             "--no-approve",
@@ -226,12 +240,12 @@ impl Inner {
     }
 
     /// The complete environment of Pi: nothing comes from the host (spec §5.4).
-    fn pi_env(&self, token: &Secret, pi_dir: &Path) -> Vec<(String, String)> {
+    fn pi_env(&self, token: &Secret) -> Vec<(String, String)> {
         let mut env: Vec<(String, String)> = [
             ("SONA_PLANE_RUN_TOKEN", token.expose()),
             ("SONA_PLANE_API_URL", &self.config.api_url),
-            ("PI_CODING_AGENT_DIR", &path(pi_dir)),
-            ("HOME", &path(pi_dir)),
+            ("PI_CODING_AGENT_DIR", PI_DIR),
+            ("HOME", PI_DIR),
             ("PI_OFFLINE", "1"),
             ("PI_SKIP_VERSION_CHECK", "1"),
             ("PI_TELEMETRY", "0"),
@@ -275,10 +289,6 @@ fn newest(messages: &[Message]) -> Result<MessageId> {
         .last()
         .map(|m| m.id)
         .ok_or_else(|| Error::Internal("empty batch".to_owned()))
-}
-
-fn path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 fn io(error: std::io::Error) -> Error {
