@@ -6,6 +6,7 @@ mod alias;
 mod caller;
 mod error;
 mod ids;
+mod session;
 mod timestamp;
 
 pub mod broker;
@@ -19,4 +20,5 @@ pub use alias::{Alias, InvalidAlias};
 pub use caller::Caller;
 pub use error::{Error, Result};
 pub use ids::{CorrelationId, MessageId, RunId, TaskId};
+pub use session::SessionKey;
 pub use timestamp::Timestamp;

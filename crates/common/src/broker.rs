@@ -1,6 +1,6 @@
 //! The contract of Message Broker.
 
-use crate::{Alias, Caller, CorrelationId, MessageId, Result, TaskId, Timestamp};
+use crate::{Alias, Caller, CorrelationId, MessageId, Result, SessionKey, TaskId, Timestamp};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -32,11 +32,17 @@ pub struct Message {
     pub created_at: Timestamp,
 }
 
+impl Message {
+    pub fn session(&self) -> SessionKey {
+        SessionKey::of(self.task_id, self.correlation_id)
+    }
+}
+
 /// Unread messages of one session, handed to one Run (D57).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxBatch {
-    /// The session to run in. `None` means messages without a task (O8).
-    pub task_id: Option<TaskId>,
+    /// The session to run in (D78).
+    pub session: SessionKey,
     /// Oldest first, never empty.
     pub messages: Vec<Message>,
 }
@@ -52,9 +58,8 @@ pub trait MessageBroker: Send + Sync {
 
     /// Unread messages of `caller` for one session, oldest first.
     ///
-    /// `task_id: None` selects messages without a task. The cursor does not move (D49).
-    async fn read_messages(&self, caller: &Caller, task_id: Option<TaskId>)
-    -> Result<Vec<Message>>;
+    /// The cursor does not move: only a finished Run moves it (D49).
+    async fn read_messages(&self, caller: &Caller, session: SessionKey) -> Result<Vec<Message>>;
 }
 
 /// What Agent Runtime calls to drive delivery. Internal, never exposed through the API.
@@ -73,7 +78,7 @@ pub trait InboxDelivery: Send + Sync {
     async fn advance_cursor(
         &self,
         agent: &Alias,
-        task_id: Option<TaskId>,
+        session: SessionKey,
         up_to: MessageId,
     ) -> Result<()>;
 }

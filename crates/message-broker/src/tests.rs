@@ -257,23 +257,19 @@ async fn message_with_active_token_is_rejected() {
 #[tokio::test]
 async fn message_to_the_operator_wakes_nobody() {
     let s = setup().await;
+    let chain = CorrelationId::new();
     s.broker
-        .send(
-            &agent("coder", CorrelationId::new()),
-            to("user", "done", None),
-        )
+        .send(&agent("coder", chain), to("user", "done", None))
         .await
         .unwrap();
     assert!(s.woken.0.lock().unwrap().is_empty());
     assert!(s.broker.agents_with_unread().await.unwrap().is_empty());
-    assert_eq!(
-        s.broker
-            .read_messages(&operator(), None)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
+    let inbox = s
+        .broker
+        .read_messages(&operator(), SessionKey::Chain(chain))
+        .await
+        .unwrap();
+    assert_eq!(inbox.len(), 1);
 }
 
 #[tokio::test]
@@ -296,24 +292,56 @@ async fn reading_is_per_session_and_keeps_the_cursor() {
         .send(&operator(), to("coder", "on task", Some(task)))
         .await
         .unwrap();
-    s.broker
+    let no_task = s
+        .broker
         .send(&operator(), to("coder", "no task", None))
         .await
         .unwrap();
     let coder = agent("coder", CorrelationId::new());
 
-    let on_task = s.broker.read_messages(&coder, Some(task)).await.unwrap();
+    let on_task = s
+        .broker
+        .read_messages(&coder, SessionKey::Task(task))
+        .await
+        .unwrap();
     assert_eq!(on_task.len(), 1);
     assert_eq!(on_task[0].body, "on task");
     // Reading again returns the same: only a finished Run moves the cursor (D49).
     assert_eq!(
-        s.broker.read_messages(&coder, Some(task)).await.unwrap(),
+        s.broker
+            .read_messages(&coder, SessionKey::Task(task))
+            .await
+            .unwrap(),
         on_task
     );
-    assert_eq!(
-        s.broker.read_messages(&coder, None).await.unwrap()[0].body,
-        "no task"
-    );
+    let chain = s
+        .broker
+        .read_messages(&coder, no_task.session())
+        .await
+        .unwrap();
+    assert_eq!(chain, [no_task]);
+}
+
+#[tokio::test]
+async fn messages_without_a_task_are_split_by_chain() {
+    let s = setup().await;
+    let first = s
+        .broker
+        .send(&operator(), to("coder", "first chain", None))
+        .await
+        .unwrap();
+    s.broker
+        .send(&operator(), to("coder", "second chain", None))
+        .await
+        .unwrap();
+    let mut reply = to("coder", "first chain again", None);
+    reply.in_reply_to = Some(first.id);
+    s.broker.send(&operator(), reply).await.unwrap();
+
+    let batch = s.broker.next_batch(&alias("coder")).await.unwrap().unwrap();
+    assert_eq!(batch.session, SessionKey::Chain(first.correlation_id));
+    let bodies: Vec<_> = batch.messages.iter().map(|m| m.body.as_str()).collect();
+    assert_eq!(bodies, ["first chain", "first chain again"]);
 }
 
 #[tokio::test]
@@ -329,20 +357,20 @@ async fn batches_follow_the_oldest_message() {
     let coder = alias("coder");
 
     let first = s.broker.next_batch(&coder).await.unwrap().unwrap();
-    assert_eq!(first.task_id, Some(a));
+    assert_eq!(first.session, SessionKey::Task(a));
     let bodies: Vec<_> = first.messages.iter().map(|m| m.body.as_str()).collect();
     assert_eq!(bodies, ["a1", "a2"]);
 
     let last = first.messages.last().unwrap().id;
     s.broker
-        .advance_cursor(&coder, Some(a), last)
+        .advance_cursor(&coder, first.session, last)
         .await
         .unwrap();
 
     let second = s.broker.next_batch(&coder).await.unwrap().unwrap();
-    assert_eq!(second.task_id, Some(b));
+    assert_eq!(second.session, SessionKey::Task(b));
     s.broker
-        .advance_cursor(&coder, Some(b), second.messages[0].id)
+        .advance_cursor(&coder, second.session, second.messages[0].id)
         .await
         .unwrap();
 
@@ -353,23 +381,25 @@ async fn batches_follow_the_oldest_message() {
 #[tokio::test]
 async fn cursor_never_moves_back() {
     let s = setup().await;
+    let task = TaskId::new();
     let first = s
         .broker
-        .send(&operator(), to("coder", "1", None))
+        .send(&operator(), to("coder", "1", Some(task)))
         .await
         .unwrap();
     let second = s
         .broker
-        .send(&operator(), to("coder", "2", None))
+        .send(&operator(), to("coder", "2", Some(task)))
         .await
         .unwrap();
     let coder = alias("coder");
+    let session = SessionKey::Task(task);
     s.broker
-        .advance_cursor(&coder, None, second.id)
+        .advance_cursor(&coder, session, second.id)
         .await
         .unwrap();
     s.broker
-        .advance_cursor(&coder, None, first.id)
+        .advance_cursor(&coder, session, first.id)
         .await
         .unwrap();
     assert_eq!(s.broker.next_batch(&coder).await.unwrap(), None);
@@ -383,15 +413,16 @@ async fn cursor_only_moves_within_its_session() {
         .send(&operator(), to("coder", "hi", Some(TaskId::new())))
         .await
         .unwrap();
+    let other_session = SessionKey::Chain(message.correlation_id);
     assert!(matches!(
         s.broker
-            .advance_cursor(&alias("coder"), None, message.id)
+            .advance_cursor(&alias("coder"), other_session, message.id)
             .await,
         Err(Error::InvalidInput(_))
     ));
     assert!(matches!(
         s.broker
-            .advance_cursor(&alias("manager"), message.task_id, message.id)
+            .advance_cursor(&alias("manager"), message.session(), message.id)
             .await,
         Err(Error::InvalidInput(_))
     ));

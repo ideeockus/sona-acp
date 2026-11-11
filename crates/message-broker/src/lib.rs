@@ -7,7 +7,7 @@ use control_plane_common::broker::{
 use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
 use control_plane_common::registry::{AgentDirectory, Credentials};
 use control_plane_common::{
-    Alias, Caller, CorrelationId, Error, MessageId, Result, TaskId, Timestamp,
+    Alias, Caller, CorrelationId, Error, MessageId, Result, SessionKey, TaskId, Timestamp,
 };
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -104,7 +104,7 @@ impl SqliteBroker {
             "SELECT m.id, m.sender, m.recipient, m.body, m.subject, m.task_id,
                     m.in_reply_to, m.correlation_id, m.created_at
              FROM messages m
-             LEFT JOIN cursors c ON c.recipient = m.recipient AND c.task_id = m.task_id
+             LEFT JOIN cursors c ON c.recipient = m.recipient AND c.session = m.session
              WHERE m.recipient = ? AND m.seq > COALESCE(c.up_to, 0)
              ORDER BY m.seq",
         )
@@ -152,17 +152,19 @@ impl MessageBroker for SqliteBroker {
 
         sqlx::query(
             "INSERT INTO messages
-                 (id, sender, recipient, body, subject, task_id, in_reply_to, correlation_id, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, sender, recipient, body, subject, task_id, in_reply_to, correlation_id,
+                  session, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(stored.id.to_string())
         .bind(stored.from.as_str())
         .bind(stored.to.as_str())
         .bind(&stored.body)
         .bind(&stored.subject)
-        .bind(task_key(stored.task_id))
+        .bind(stored.task_id.map(|id| id.to_string()))
         .bind(stored.in_reply_to.map(|id| id.to_string()))
         .bind(stored.correlation_id.to_string())
+        .bind(stored.session().to_string())
         .bind(stored.created_at.as_unix_millis())
         .execute(&self.pool)
         .await
@@ -175,13 +177,9 @@ impl MessageBroker for SqliteBroker {
         Ok(stored)
     }
 
-    async fn read_messages(
-        &self,
-        caller: &Caller,
-        task_id: Option<TaskId>,
-    ) -> Result<Vec<Message>> {
+    async fn read_messages(&self, caller: &Caller, session: SessionKey) -> Result<Vec<Message>> {
         let mut unread = self.unread(caller.alias()).await?;
-        unread.retain(|m| m.task_id == task_id);
+        unread.retain(|m| m.session() == session);
         Ok(unread)
     }
 }
@@ -192,7 +190,7 @@ impl InboxDelivery for SqliteBroker {
         let recipients: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT m.recipient
              FROM messages m
-             LEFT JOIN cursors c ON c.recipient = m.recipient AND c.task_id = m.task_id
+             LEFT JOIN cursors c ON c.recipient = m.recipient AND c.session = m.session
              WHERE m.seq > COALESCE(c.up_to, 0)
              ORDER BY m.recipient",
         )
@@ -215,10 +213,10 @@ impl InboxDelivery for SqliteBroker {
         let Some(oldest) = unread.first() else {
             return Ok(None);
         };
-        let task_id = oldest.task_id;
-        unread.retain(|m| m.task_id == task_id);
+        let session = oldest.session();
+        unread.retain(|m| m.session() == session);
         Ok(Some(InboxBatch {
-            task_id,
+            session,
             messages: unread,
         }))
     }
@@ -226,15 +224,15 @@ impl InboxDelivery for SqliteBroker {
     async fn advance_cursor(
         &self,
         agent: &Alias,
-        task_id: Option<TaskId>,
+        session: SessionKey,
         up_to: MessageId,
     ) -> Result<()> {
         let seq: Option<i64> = sqlx::query_scalar(
-            "SELECT seq FROM messages WHERE id = ? AND recipient = ? AND task_id = ?",
+            "SELECT seq FROM messages WHERE id = ? AND recipient = ? AND session = ?",
         )
         .bind(up_to.to_string())
         .bind(agent.as_str())
-        .bind(task_key(task_id))
+        .bind(session.to_string())
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
@@ -243,11 +241,11 @@ impl InboxDelivery for SqliteBroker {
         })?;
 
         sqlx::query(
-            "INSERT INTO cursors (recipient, task_id, up_to) VALUES (?, ?, ?)
-             ON CONFLICT (recipient, task_id) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)",
+            "INSERT INTO cursors (recipient, session, up_to) VALUES (?, ?, ?)
+             ON CONFLICT (recipient, session) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)",
         )
         .bind(agent.as_str())
-        .bind(task_key(task_id))
+        .bind(session.to_string())
         .bind(seq)
         .execute(&self.pool)
         .await
@@ -263,7 +261,7 @@ struct Row {
     recipient: String,
     body: String,
     subject: Option<String>,
-    task_id: String,
+    task_id: Option<String>,
     in_reply_to: Option<String>,
     correlation_id: String,
     created_at: i64,
@@ -277,18 +275,12 @@ impl Row {
             to: parse(&self.recipient)?,
             body: self.body,
             subject: self.subject,
-            task_id: (!self.task_id.is_empty())
-                .then(|| parse(&self.task_id))
-                .transpose()?,
+            task_id: self.task_id.as_deref().map(parse).transpose()?,
             in_reply_to: self.in_reply_to.as_deref().map(parse).transpose()?,
             correlation_id: parse(&self.correlation_id)?,
             created_at: Timestamp::from_unix_millis(self.created_at)?,
         })
     }
-}
-
-fn task_key(task_id: Option<TaskId>) -> String {
-    task_id.map(|id| id.to_string()).unwrap_or_default()
 }
 
 fn internal(error: sqlx::Error) -> Error {
