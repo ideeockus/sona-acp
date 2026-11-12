@@ -1,8 +1,7 @@
-//! Waking agents and serving their sessions one Run at a time (D12, D15, D30).
+//! Following Broker's notifications and serving agents one Run at a time (D12, D30, D86).
 
 use crate::launcher::Launcher;
-use async_trait::async_trait;
-use control_plane_common::broker::{InboxDelivery, WakeSink};
+use control_plane_common::broker::{InboxDelivery, Notifications};
 use control_plane_common::journal::JournalWriter;
 use control_plane_common::registry::{AgentDirectory, Credentials};
 use control_plane_common::{Alias, Error, Result};
@@ -10,6 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::Notify;
+use tokio::sync::broadcast::error::RecvError;
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
@@ -71,26 +71,41 @@ impl Runtime {
         })
     }
 
-    /// Call once on startup: no Run survived the restart, so its token must not either,
-    /// and agents with unread mail are woken, since a notification may have been lost
-    /// (D15, D24).
+    /// Call once on startup. No Run survived the restart, so neither may its token (D24).
+    /// Then Runtime wakes agents that already have mail and follows Broker's
+    /// notifications from there on (D15, D86).
     pub async fn start(&self) -> Result<()> {
         self.inner.credentials.revoke_all_run_tokens().await?;
-        for agent in self.inner.inbox.agents_with_unread().await? {
-            self.inner.wake(&agent);
-        }
+        // Subscribe first, so a message stored while reconciling is not missed.
+        let notifications = self.inner.inbox.subscribe();
+        self.inner.reconcile().await?;
+        tokio::spawn(self.inner.clone().follow(notifications));
         Ok(())
     }
 }
 
-#[async_trait]
-impl WakeSink for Runtime {
-    async fn wake(&self, agent: &Alias) {
-        self.inner.wake(agent);
-    }
-}
-
 impl Inner {
+    /// Wakes every agent with unread mail.
+    async fn reconcile(self: &Arc<Self>) -> Result<()> {
+        for agent in self.inbox.agents_with_unread().await? {
+            self.wake(&agent);
+        }
+        Ok(())
+    }
+
+    async fn follow(self: Arc<Self>, mut notifications: Notifications) {
+        loop {
+            match notifications.recv().await {
+                Ok(agent) => self.wake(&agent),
+                // Notifications were dropped, but the inbox still has everything (D15).
+                Err(RecvError::Lagged(_)) => {
+                    let _ = self.reconcile().await;
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    }
+
     /// Signals the agent's active Run, or starts serving the agent.
     fn wake(self: &Arc<Self>, agent: &Alias) {
         let mut serving = self.serving();

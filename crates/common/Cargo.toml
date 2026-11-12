@@ -12,6 +12,7 @@ async-trait.workspace = true
 jiff.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 uuid.workspace = true
 
 [dev-dependencies]

@@ -62,9 +62,20 @@ pub trait MessageBroker: Send + Sync {
     async fn read_messages(&self, caller: &Caller, session: SessionKey) -> Result<Vec<Message>>;
 }
 
+/// A stream of aliases of agents that just got a message (D86).
+///
+/// A hint only: the inbox stays the source of truth (D15). A subscriber that lags
+/// behind gets `RecvError::Lagged` and should reconcile against the inbox.
+pub type Notifications = tokio::sync::broadcast::Receiver<Alias>;
+
 /// What Agent Runtime calls to drive delivery. Internal, never exposed through the API.
 #[async_trait]
 pub trait InboxDelivery: Send + Sync {
+    /// Subscribes to new-message notifications. Broker decides who is notified,
+    /// the subscriber decides what to do (D12). Subscribe before reconciling,
+    /// so nothing falls between the two.
+    fn subscribe(&self) -> Notifications;
+
     /// Agents that have unread messages. Used to reconcile on startup (D15).
     async fn agents_with_unread(&self) -> Result<Vec<Alias>>;
 
@@ -86,15 +97,6 @@ pub trait InboxDelivery: Send + Sync {
     ) -> Result<()>;
 }
 
-/// How Broker reports that an agent has something to read.
-///
-/// Implemented by Agent Runtime, which decides between a new Run and `steer` (D12).
-/// A hint only: the inbox stays the source of truth (D15).
-#[async_trait]
-pub trait WakeSink: Send + Sync {
-    async fn wake(&self, agent: &Alias);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,11 +104,7 @@ mod tests {
 
     // Components hold each other as trait objects (D67).
     #[allow(dead_code)]
-    struct DynCompatible(
-        Arc<dyn MessageBroker>,
-        Arc<dyn InboxDelivery>,
-        Arc<dyn WakeSink>,
-    );
+    struct DynCompatible(Arc<dyn MessageBroker>, Arc<dyn InboxDelivery>);
 
     #[test]
     fn new_message_cannot_carry_a_sender() {

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use control_plane_common::broker::{
-    InboxBatch, InboxDelivery, Message, MessageBroker, NewMessage, WakeSink,
+    InboxBatch, InboxDelivery, Message, MessageBroker, NewMessage, Notifications,
 };
 use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
 use control_plane_common::registry::{AgentDirectory, Credentials};
@@ -12,13 +12,17 @@ use control_plane_common::{
 use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::sync::broadcast;
+
+/// Notifications kept for a slow subscriber; beyond this it lags and reconciles (D86).
+const NOTIFICATION_BUFFER: usize = 1024;
 
 pub struct SqliteBroker {
     pool: SqlitePool,
     directory: Arc<dyn AgentDirectory>,
     credentials: Arc<dyn Credentials>,
     journal: Arc<dyn JournalWriter>,
-    wake: Arc<dyn WakeSink>,
+    notifications: broadcast::Sender<Alias>,
 }
 
 impl SqliteBroker {
@@ -28,7 +32,6 @@ impl SqliteBroker {
         directory: Arc<dyn AgentDirectory>,
         credentials: Arc<dyn Credentials>,
         journal: Arc<dyn JournalWriter>,
-        wake: Arc<dyn WakeSink>,
     ) -> Result<Self> {
         sqlx::migrate!()
             .run(&pool)
@@ -39,7 +42,7 @@ impl SqliteBroker {
             directory,
             credentials,
             journal,
-            wake,
+            notifications: broadcast::channel(NOTIFICATION_BUFFER).0,
         })
     }
 
@@ -170,9 +173,10 @@ impl MessageBroker for SqliteBroker {
         .await
         .map_err(internal)?;
 
-        // Only agents are woken. The operator reads their inbox through the CLI.
+        // Only agents are notified. The operator reads their inbox through the CLI.
         if self.directory.agent(&stored.to).await.is_ok() {
-            self.wake.wake(&stored.to).await;
+            // Having no subscriber is fine: the inbox is the source of truth (D15).
+            let _ = self.notifications.send(stored.to.clone());
         }
         Ok(stored)
     }
@@ -184,6 +188,10 @@ impl MessageBroker for SqliteBroker {
 
 #[async_trait]
 impl InboxDelivery for SqliteBroker {
+    fn subscribe(&self) -> Notifications {
+        self.notifications.subscribe()
+    }
+
     async fn agents_with_unread(&self) -> Result<Vec<Alias>> {
         let recipients: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT m.recipient

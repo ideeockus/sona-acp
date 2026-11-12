@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use control_plane_agent_runtime::launcher::{Launched, Launcher, Process, RunSpec};
 use control_plane_agent_runtime::{Runtime, RuntimeConfig};
-use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, WakeSink};
+use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentCard, AgentDirectory, Credentials, ModelRef, Secret};
 use control_plane_common::{
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, broadcast, oneshot};
 
 // ---- Registry ----
 
@@ -77,16 +77,29 @@ impl Credentials for Tokens {
 
 // ---- Broker ----
 
-/// Messages in delivery order and the ids already read.
-#[derive(Default)]
+/// Messages in delivery order, the ids already read, and notifications like Broker's.
 struct Inbox {
     messages: Mutex<Vec<Message>>,
     read: Mutex<HashSet<MessageId>>,
+    notifications: broadcast::Sender<Alias>,
+}
+
+impl Default for Inbox {
+    fn default() -> Self {
+        Self {
+            messages: Mutex::default(),
+            read: Mutex::default(),
+            notifications: broadcast::channel(16).0,
+        }
+    }
 }
 
 impl Inbox {
+    /// Stores a message and notifies, as Broker does on send.
     fn add(&self, message: Message) {
+        let to = message.to.clone();
         self.messages.lock().unwrap().push(message);
+        let _ = self.notifications.send(to);
     }
 
     fn is_read(&self, message: &Message) -> bool {
@@ -107,6 +120,10 @@ impl Inbox {
 
 #[async_trait]
 impl InboxDelivery for Inbox {
+    fn subscribe(&self) -> Notifications {
+        self.notifications.subscribe()
+    }
+
     async fn agents_with_unread(&self) -> Result<Vec<Alias>> {
         let mut agents: Vec<Alias> = ["coder", "manager"]
             .map(alias_of)
@@ -372,7 +389,7 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
     s.inbox.add(first.clone());
     s.inbox.add(second.clone());
 
-    s.runtime.wake(&alias_of("coder")).await;
+    s.runtime.start().await.unwrap();
     eventually("both messages read", || {
         s.inbox.is_read(&first) && s.inbox.is_read(&second)
     })
@@ -452,14 +469,13 @@ async fn same_session_is_steered_other_sessions_wait() {
     let first = message("coder", Some(task), chain);
     s.inbox.add(first.clone());
 
-    s.runtime.wake(&alias_of("coder")).await;
+    s.runtime.start().await.unwrap();
     eventually("prompt", || s.pi.received.lock().unwrap().len() == 1).await;
 
     let follow_up = message("coder", Some(task), chain);
     let elsewhere = message("coder", Some(other), CorrelationId::new());
     s.inbox.add(follow_up.clone());
     s.inbox.add(elsewhere.clone());
-    s.runtime.wake(&alias_of("coder")).await;
     eventually("steer", || s.pi.received.lock().unwrap().len() == 2).await;
     assert_eq!(
         s.pi.received.lock().unwrap()[1],
@@ -489,7 +505,7 @@ async fn a_crashed_run_leaves_messages_unread() {
     let first = message("coder", None, CorrelationId::new());
     s.inbox.add(first.clone());
 
-    s.runtime.wake(&alias_of("coder")).await;
+    s.runtime.start().await.unwrap();
     eventually("run finished", || s.journal.actions().len() == 2).await;
 
     assert!(!s.inbox.is_read(&first));

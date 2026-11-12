@@ -57,20 +57,18 @@ impl JournalWriter for Recorded {
     }
 }
 
-#[derive(Default)]
-struct Woken(Mutex<Vec<Alias>>);
-
-#[async_trait]
-impl WakeSink for Woken {
-    async fn wake(&self, agent: &Alias) {
-        self.0.lock().unwrap().push(agent.clone());
-    }
-}
-
 struct Setup {
     broker: SqliteBroker,
     journal: Arc<Recorded>,
-    woken: Arc<Woken>,
+    subscription: Mutex<Notifications>,
+}
+
+impl Setup {
+    /// Aliases notified since the last call.
+    fn notified(&self) -> Vec<Alias> {
+        let mut subscription = self.subscription.lock().unwrap();
+        std::iter::from_fn(|| subscription.try_recv().ok()).collect()
+    }
 }
 
 fn alias(name: &str) -> Alias {
@@ -106,20 +104,19 @@ async fn setup() -> Setup {
         card("coder", &["manager", "user"]),
     ]);
     let journal = Arc::new(Recorded::default());
-    let woken = Arc::new(Woken::default());
     let broker = SqliteBroker::new(
         pool,
         Arc::new(directory),
         Arc::new(OneActiveToken),
         journal.clone(),
-        woken.clone(),
     )
     .await
     .unwrap();
+    let subscription = Mutex::new(broker.subscribe());
     Setup {
         broker,
         journal,
-        woken,
+        subscription,
     }
 }
 
@@ -158,7 +155,7 @@ async fn agent_message_takes_sender_and_chain_from_the_run() {
         .unwrap();
     assert_eq!(sent.from, alias("manager"));
     assert_eq!(sent.correlation_id, chain);
-    assert_eq!(*s.woken.0.lock().unwrap(), [alias("coder")]);
+    assert_eq!(s.notified(), [alias("coder")]);
 }
 
 #[tokio::test]
@@ -248,21 +245,21 @@ async fn message_with_active_token_is_rejected() {
             .await,
         Err(Error::Forbidden(_))
     ));
-    assert!(s.woken.0.lock().unwrap().is_empty());
+    assert!(s.notified().is_empty());
     let events = s.journal.0.lock().unwrap();
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(|e| e.decision == Some(Decision::Deny)));
 }
 
 #[tokio::test]
-async fn message_to_the_operator_wakes_nobody() {
+async fn message_to_the_operator_notifies_nobody() {
     let s = setup().await;
     let chain = CorrelationId::new();
     s.broker
         .send(&agent("coder", chain), to("user", "done", None))
         .await
         .unwrap();
-    assert!(s.woken.0.lock().unwrap().is_empty());
+    assert!(s.notified().is_empty());
     assert!(s.broker.agents_with_unread().await.unwrap().is_empty());
     let inbox = s
         .broker
