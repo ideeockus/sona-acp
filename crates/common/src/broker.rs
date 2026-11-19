@@ -47,6 +47,25 @@ pub struct InboxBatch {
     pub messages: Vec<Message>,
 }
 
+/// A session whose Runs failed, as the operator sees it (D77).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailingSession {
+    pub session: SessionKey,
+    /// Failed Runs in a row.
+    pub failures: u32,
+    pub last_error: String,
+    /// Delivery stopped until the operator retries or skips the session.
+    pub stuck: bool,
+}
+
+/// An agent's inbox at a glance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxStatus {
+    pub agent: Alias,
+    pub unread: u32,
+    pub failing: Vec<FailingSession>,
+}
+
 /// What senders and readers call. Exposed through the external API.
 #[async_trait]
 pub trait MessageBroker: Send + Sync {
@@ -80,13 +99,15 @@ pub trait InboxDelivery: Send + Sync {
     async fn agents_with_unread(&self) -> Result<Vec<Alias>>;
 
     /// All unread messages of the session holding the agent's oldest unread message.
+    /// Stuck sessions are left out (D77).
     // Deliberately simple for one active Run per agent; revisit with parallel Runs (D57).
     async fn next_batch(&self, agent: &Alias) -> Result<Option<InboxBatch>>;
 
     /// Unread messages of one session, oldest first. What an active Run may get by `steer`.
     async fn unread_in(&self, agent: &Alias, session: SessionKey) -> Result<Vec<Message>>;
 
-    /// Marks a session's messages up to and including `up_to` as read (D49).
+    /// Marks a session's messages up to and including `up_to` as read (D49), and
+    /// forgets the session's failures: they count only in a row (D77).
     ///
     /// The cursor follows delivery order and never moves back.
     async fn advance_cursor(
@@ -95,6 +116,25 @@ pub trait InboxDelivery: Send + Sync {
         session: SessionKey,
         up_to: MessageId,
     ) -> Result<()>;
+
+    /// Counts a failed Run of the session. Returns the failures in a row (D77).
+    async fn record_failure(&self, agent: &Alias, session: SessionKey, error: &str) -> Result<u32>;
+
+    /// Stops delivering the session until the operator retries or skips it (D77).
+    async fn mark_stuck(&self, agent: &Alias, session: SessionKey) -> Result<()>;
+}
+
+/// What the operator calls to see and unblock delivery (D77). Exposed through the API.
+#[async_trait]
+pub trait DeliveryControl: Send + Sync {
+    /// Agents with unread messages or failing sessions.
+    async fn inbox_status(&self, caller: &Caller) -> Result<Vec<InboxStatus>>;
+
+    /// Forgets the session's failures and delivers it again.
+    async fn retry(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()>;
+
+    /// Marks the session's unread messages as read without delivering them.
+    async fn skip(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()>;
 }
 
 #[cfg(test)]
@@ -104,7 +144,11 @@ mod tests {
 
     // Components hold each other as trait objects (D67).
     #[allow(dead_code)]
-    struct DynCompatible(Arc<dyn MessageBroker>, Arc<dyn InboxDelivery>);
+    struct DynCompatible(
+        Arc<dyn MessageBroker>,
+        Arc<dyn InboxDelivery>,
+        Arc<dyn DeliveryControl>,
+    );
 
     #[test]
     fn new_message_cannot_carry_a_sender() {

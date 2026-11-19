@@ -134,6 +134,14 @@ async fn an_agent_answers_the_operator_past_gateway() {
         .unwrap();
     assert_eq!(finished["result"], "ok");
 
+    // Afterwards the agent is idle with nothing left to deliver.
+    let status = operator.call("GET", "/v1/status", None).await;
+    assert_eq!(
+        status,
+        json!([{ "alias": "coder", "title": "Writes code", "run": null,
+                 "unread": 0, "failing": [] }])
+    );
+
     // The model saw why the read was refused.
     let requests = model.requests.lock().unwrap();
     let seen = serde_json::to_string(&requests.last().unwrap()["messages"]).unwrap();

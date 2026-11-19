@@ -14,6 +14,8 @@ pub mod gateway;
 pub mod journal;
 pub mod layout;
 pub mod registry;
+pub mod runtime;
+pub mod status;
 pub mod tasks;
 
 pub use alias::{Alias, InvalidAlias};

@@ -41,10 +41,35 @@ pub enum Event {
         tool_name: String,
         is_error: bool,
     },
+    /// A message is complete; for the model's answers it tells how they ended.
+    MessageEnd { message: EndedMessage },
     /// Pi will not continue on its own: the Run's work is done.
     AgentSettled,
     #[serde(other)]
     Other,
+}
+
+/// The part of a finished message that Runtime looks at.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndedMessage {
+    pub role: String,
+    /// `error` once Pi gave up on the model provider.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+impl EndedMessage {
+    /// The model's failure, if this is a model answer that ended in one.
+    pub fn model_error(&self) -> Option<String> {
+        (self.role == "assistant" && self.stop_reason.as_deref() == Some("error")).then(|| {
+            self.error_message
+                .clone()
+                .unwrap_or_else(|| "no details".to_owned())
+        })
+    }
 }
 
 /// Writes commands to Pi's stdin.

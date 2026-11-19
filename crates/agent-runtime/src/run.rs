@@ -8,8 +8,9 @@ use control_plane_common::broker::{InboxBatch, Message};
 use control_plane_common::journal::{Component, Event as JournalEvent, Outcome};
 use control_plane_common::layout::{EXTENSION_DIR, PI_DIR, SESSIONS_DIR, WORKDIR};
 use control_plane_common::registry::{AgentCard, Secret};
+use control_plane_common::runtime::ActiveRun;
 use control_plane_common::{
-    Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId,
+    Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId, Timestamp,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -70,7 +71,15 @@ impl Inner {
             .issue_run_token(agent, run_id, correlation_id)
             .await?;
 
+        let active = ActiveRun {
+            agent: agent.clone(),
+            run_id,
+            session: run.batch.session,
+            started_at: Timestamp::now(),
+        };
+        self.active().insert(agent.clone(), active);
         let outcome = self.drive(&run, &token, wake).await;
+        self.active().remove(agent);
 
         // Whatever happened, the token dies with the Run (D24).
         let revoked = self.credentials.revoke_run_token(run_id).await;
@@ -172,11 +181,22 @@ impl Inner {
             .await?;
         let mut delivered: HashSet<MessageId> = messages.iter().map(|m| m.id).collect();
         let mut last = newest(messages)?;
+        // How the model's latest answer ended. Pi retries the provider itself and settles
+        // normally when it gives up, so this is how a failed model reaches us (D77).
+        let mut model_error = None;
 
         loop {
             tokio::select! {
                 event = events.next() => match event? {
-                    Some(Event::AgentSettled) => return Ok(last),
+                    Some(Event::MessageEnd { message }) if message.role == "assistant" => {
+                        model_error = message.model_error();
+                    }
+                    Some(Event::AgentSettled) => {
+                        return match model_error {
+                            Some(error) => Err(Error::Internal(format!("the model failed: {error}"))),
+                            None => Ok(last),
+                        };
+                    }
                     Some(Event::ToolExecutionEnd { tool_name, is_error, .. }) => {
                         let result = if is_error { Outcome::Error } else { Outcome::Ok };
                         self.record(run, &tool_name, Some(result), None).await?;

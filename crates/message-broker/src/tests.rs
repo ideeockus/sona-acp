@@ -448,3 +448,141 @@ async fn startup_reconcile_lists_agents_with_unread() {
         [alias("coder"), alias("manager")]
     );
 }
+
+#[tokio::test]
+async fn failures_count_in_a_row_until_a_run_succeeds() {
+    let s = setup().await;
+    let sent = s
+        .broker
+        .send(&operator(), to("coder", "a", None))
+        .await
+        .unwrap();
+    let (coder, session) = (alias("coder"), sent.session());
+
+    assert_eq!(
+        s.broker
+            .record_failure(&coder, session, "boom")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        s.broker
+            .record_failure(&coder, session, "bang")
+            .await
+            .unwrap(),
+        2
+    );
+    let status = s.broker.inbox_status(&operator()).await.unwrap();
+    assert_eq!(status[0].failing[0].failures, 2);
+    assert_eq!(status[0].failing[0].last_error, "bang");
+
+    s.broker
+        .advance_cursor(&coder, session, sent.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        s.broker
+            .record_failure(&coder, session, "again")
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn stuck_sessions_are_not_delivered_until_retried() {
+    let s = setup().await;
+    let first = s
+        .broker
+        .send(&operator(), to("coder", "a", None))
+        .await
+        .unwrap();
+    let second = s
+        .broker
+        .send(&operator(), to("coder", "b", None))
+        .await
+        .unwrap();
+    let coder = alias("coder");
+
+    s.broker
+        .record_failure(&coder, first.session(), "boom")
+        .await
+        .unwrap();
+    s.broker.mark_stuck(&coder, first.session()).await.unwrap();
+    // Other sessions go on.
+    let batch = s.broker.next_batch(&coder).await.unwrap().unwrap();
+    assert_eq!(batch.session, second.session());
+
+    s.notified();
+    s.broker
+        .retry(&operator(), &coder, first.session())
+        .await
+        .unwrap();
+    assert_eq!(s.notified(), std::slice::from_ref(&coder));
+    let batch = s.broker.next_batch(&coder).await.unwrap().unwrap();
+    assert_eq!(batch.session, first.session());
+}
+
+#[tokio::test]
+async fn skip_marks_the_session_read_and_forgets_failures() {
+    let s = setup().await;
+    let sent = s
+        .broker
+        .send(&operator(), to("coder", "a", None))
+        .await
+        .unwrap();
+    let coder = alias("coder");
+    s.broker
+        .record_failure(&coder, sent.session(), "boom")
+        .await
+        .unwrap();
+    s.broker.mark_stuck(&coder, sent.session()).await.unwrap();
+
+    s.broker
+        .skip(&operator(), &coder, sent.session())
+        .await
+        .unwrap();
+    assert!(s.broker.next_batch(&coder).await.unwrap().is_none());
+    assert!(s.broker.inbox_status(&operator()).await.unwrap().is_empty());
+    // Nothing is left to skip or retry.
+    let skip = s.broker.skip(&operator(), &coder, sent.session()).await;
+    assert!(matches!(skip, Err(Error::NotFound(_))));
+    let retry = s.broker.retry(&operator(), &coder, sent.session()).await;
+    assert!(matches!(retry, Err(Error::NotFound(_))));
+}
+
+#[tokio::test]
+async fn inbox_status_shows_agents_only_to_the_operator() {
+    let s = setup().await;
+    s.broker
+        .send(&operator(), to("coder", "a", None))
+        .await
+        .unwrap();
+    let chain = CorrelationId::new();
+    s.broker
+        .send(&agent("coder", chain), to("user", "hi", None))
+        .await
+        .unwrap();
+
+    let status = s.broker.inbox_status(&operator()).await.unwrap();
+    // The operator's own mail is not listed.
+    assert_eq!(status.len(), 1);
+    assert_eq!((status[0].agent.as_str(), status[0].unread), ("coder", 1));
+
+    let session = SessionKey::Chain(chain);
+    for denied in [
+        s.broker
+            .inbox_status(&agent("coder", chain))
+            .await
+            .map(drop),
+        s.broker
+            .retry(&agent("coder", chain), &alias("coder"), session)
+            .await,
+        s.broker
+            .skip(&agent("coder", chain), &alias("coder"), session)
+            .await,
+    ] {
+        assert!(matches!(denied, Err(Error::Forbidden(_))));
+    }
+}

@@ -2,7 +2,9 @@ use super::*;
 use async_trait::async_trait;
 use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
+use control_plane_common::broker::InboxStatus;
 use control_plane_common::registry::Secret;
+use control_plane_common::runtime::ActiveRun;
 use control_plane_common::{Caller, MessageId, Result, Timestamp};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -151,19 +153,61 @@ impl JournalReader for Journal {
     }
 }
 
+/// Records retried and skipped sessions; the operator only.
+#[derive(Default)]
+struct Delivery(Mutex<Vec<(&'static str, Alias, SessionKey)>>);
+
+#[async_trait]
+impl DeliveryControl for Delivery {
+    async fn inbox_status(&self, caller: &Caller) -> Result<Vec<InboxStatus>> {
+        operator_only(caller)?;
+        Ok(Vec::new())
+    }
+    async fn retry(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()> {
+        operator_only(caller)?;
+        self.0
+            .lock()
+            .unwrap()
+            .push(("retry", agent.clone(), session));
+        Ok(())
+    }
+    async fn skip(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()> {
+        operator_only(caller)?;
+        self.0
+            .lock()
+            .unwrap()
+            .push(("skip", agent.clone(), session));
+        Ok(())
+    }
+}
+
+struct NoRuns;
+
+#[async_trait]
+impl RunStatus for NoRuns {
+    async fn active_runs(&self, caller: &Caller) -> Result<Vec<ActiveRun>> {
+        operator_only(caller)?;
+        Ok(Vec::new())
+    }
+}
+
 struct Setup {
     app: Router,
     broker: Arc<Broker>,
+    delivery: Arc<Delivery>,
     journal: Arc<Journal>,
 }
 
 fn setup() -> Setup {
     let broker = Arc::new(Broker::default());
+    let delivery = Arc::new(Delivery::default());
     let journal = Arc::new(Journal::default());
     let app = router(Services {
         credentials: Arc::new(Tokens),
         registry: Arc::new(Registry),
         broker: broker.clone(),
+        delivery: delivery.clone(),
+        runs: Arc::new(NoRuns),
         tasks: Arc::new(BrokenTasks),
         gateway: Arc::new(DenyBash),
         journal: journal.clone(),
@@ -171,6 +215,7 @@ fn setup() -> Setup {
     Setup {
         app,
         broker,
+        delivery,
         journal,
     }
 }
@@ -372,4 +417,35 @@ async fn sessions_are_read_by_key() {
     )
     .await;
     assert_eq!((status, messages), (StatusCode::OK, json!([])));
+}
+
+#[tokio::test]
+async fn status_is_for_the_operator() {
+    let s = setup();
+    let (status, body) = call(&s.app, Method::GET, "/v1/status", Some(OPERATOR), None).await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
+    let (status, _) = call(&s.app, Method::GET, "/v1/status", Some(AGENT), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn retry_and_skip_name_an_agent_and_a_session() {
+    let s = setup();
+    let session = SessionKey::Task(TaskId::new());
+    for action in ["retry", "skip"] {
+        let uri = format!("/v1/agents/coder/sessions/{session}/{action}");
+        let (status, _) = call(&s.app, Method::POST, &uri, Some(OPERATOR), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    assert_eq!(
+        *s.delivery.0.lock().unwrap(),
+        [
+            ("retry", alias("coder"), session),
+            ("skip", alias("coder"), session)
+        ]
+    );
+
+    let uri = "/v1/agents/coder/sessions/inbox/retry";
+    let (status, _) = call(&s.app, Method::POST, uri, Some(OPERATOR), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

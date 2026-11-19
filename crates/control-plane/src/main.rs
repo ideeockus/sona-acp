@@ -22,6 +22,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
@@ -116,13 +117,15 @@ async fn serve(config: Config) -> Result<(), Failure> {
     );
     let gateway = Arc::new(Gateway::new(registry.clone(), journal.clone()));
 
-    let runtime = Runtime::new(
+    let runtime = Arc::new(Runtime::new(
         RuntimeConfig {
             data_dir: config.data_dir.clone(),
             extension: config.extension,
             api_url: config.api_url,
             models_json: config.models_json,
             provider_env: provider_env(&config.provider_env)?,
+            // Numbers to be tuned on the first real runs (O32).
+            retry_delays: vec![Duration::from_secs(30), Duration::from_secs(120)],
         },
         registry.clone(),
         registry.clone(),
@@ -133,13 +136,15 @@ async fn serve(config: Config) -> Result<(), Failure> {
             config.agent_network,
             ContainerUser::owner_of(&config.data_dir)?,
         )),
-    )?;
+    )?);
     runtime.start().await?;
 
     let app = router(Services {
         credentials: registry.clone(),
         registry,
-        broker,
+        broker: broker.clone(),
+        delivery: broker,
+        runs: runtime,
         tasks,
         gateway,
         journal,

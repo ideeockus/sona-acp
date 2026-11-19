@@ -1,13 +1,16 @@
 //! Following Broker's notifications and serving agents one Run at a time (D12, D30, D86).
 
 use crate::launcher::Launcher;
+use async_trait::async_trait;
 use control_plane_common::broker::{InboxDelivery, Notifications};
-use control_plane_common::journal::JournalWriter;
+use control_plane_common::journal::{Component, Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentDirectory, Credentials};
-use control_plane_common::{Alias, Error, Result};
+use control_plane_common::runtime::{ActiveRun, RunStatus};
+use control_plane_common::{Alias, Caller, Error, Result, SessionKey};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -23,6 +26,9 @@ pub struct RuntimeConfig {
     pub models_json: Option<PathBuf>,
     /// The model provider key, passed to Pi in the first slice (D32).
     pub provider_env: Vec<(String, String)>,
+    /// The pause before each retry of a failed session. One failure more, and the
+    /// session is stuck until the operator retries or skips it (D77).
+    pub retry_delays: Vec<Duration>,
 }
 
 pub struct Runtime {
@@ -38,6 +44,8 @@ pub(crate) struct Inner {
     pub(crate) launcher: Arc<dyn Launcher>,
     /// Agents being served, each with the signal that new mail arrived.
     serving: Mutex<HashMap<Alias, Arc<Notify>>>,
+    /// Runs in progress, by agent.
+    pub(crate) active: Mutex<HashMap<Alias, ActiveRun>>,
 }
 
 impl Runtime {
@@ -67,6 +75,7 @@ impl Runtime {
                 journal,
                 launcher,
                 serving: Mutex::new(HashMap::new()),
+                active: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -121,16 +130,17 @@ impl Inner {
     /// Runs the agent's sessions one after another until its inbox is empty (D30, D57).
     async fn serve(self: Arc<Self>, agent: Alias, notify: Arc<Notify>) {
         let drained = loop {
-            match self.inbox.next_batch(&agent).await {
-                Ok(Some(batch)) => {
-                    // A failed Run leaves its messages unread (D49). Until retries (D77)
-                    // arrive, the agent waits for its next wake instead of looping.
-                    if self.run(&agent, batch, &notify).await.is_err() {
-                        break false;
-                    }
-                }
+            let batch = match self.inbox.next_batch(&agent).await {
+                Ok(Some(batch)) => batch,
                 Ok(None) => break true,
                 Err(_) => break false,
+            };
+            let session = batch.session;
+            // A failed Run leaves its messages unread (D49), so the next batch retries it.
+            if let Err(error) = self.run(&agent, batch, &notify).await
+                && self.failed(&agent, session, &error).await.is_err()
+            {
+                break false;
             }
         };
         self.serving().remove(&agent);
@@ -141,7 +151,56 @@ impl Inner {
         }
     }
 
+    /// Counts the failure, then pauses before the retry or stops the session (D77).
+    /// The agent's other sessions wait meanwhile: one Run at a time (D30).
+    async fn failed(&self, agent: &Alias, session: SessionKey, error: &Error) -> Result<()> {
+        let error = error.to_string();
+        let failures = self.inbox.record_failure(agent, session, &error).await?;
+        let attempt = usize::try_from(failures).unwrap_or(usize::MAX);
+        if let Some(delay) = self.config.retry_delays.get(attempt - 1) {
+            tokio::time::sleep(*delay).await;
+            return Ok(());
+        }
+        self.inbox.mark_stuck(agent, session).await?;
+        let (task_id, correlation_id) = match session {
+            SessionKey::Task(id) => (Some(id), None),
+            SessionKey::Chain(id) => (None, Some(id)),
+        };
+        self.journal
+            .record(Event {
+                actor: agent.clone(),
+                component: Component::Runtime,
+                action: "session_stuck".to_owned(),
+                decision: None,
+                result: Some(Outcome::Error),
+                reason: Some(error),
+                run_id: None,
+                correlation_id,
+                task_id,
+            })
+            .await
+    }
+
     fn serving(&self) -> MutexGuard<'_, HashMap<Alias, Arc<Notify>>> {
         self.serving.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn active(&self) -> MutexGuard<'_, HashMap<Alias, ActiveRun>> {
+        self.active.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[async_trait]
+impl RunStatus for Runtime {
+    async fn active_runs(&self, caller: &Caller) -> Result<Vec<ActiveRun>> {
+        if !matches!(caller, Caller::Operator { .. }) {
+            return Err(Error::Forbidden(format!(
+                "{} is not the operator",
+                caller.alias()
+            )));
+        }
+        let mut runs: Vec<ActiveRun> = self.inner.active().values().cloned().collect();
+        runs.sort_by(|a, b| a.agent.as_str().cmp(b.agent.as_str()));
+        Ok(runs)
     }
 }

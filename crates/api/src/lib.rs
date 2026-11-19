@@ -9,10 +9,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use control_plane_common::broker::{Message, MessageBroker, NewMessage};
+use control_plane_common::broker::{DeliveryControl, Message, MessageBroker, NewMessage};
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
 use control_plane_common::registry::{AgentCard, AgentRegistry, Credentials};
+use control_plane_common::runtime::RunStatus;
+use control_plane_common::status::AgentStatus;
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskUpdate, TaskView};
 use control_plane_common::{Alias, CorrelationId, Error, RunId, SessionKey, TaskId};
 use extract::{ApiError, Authenticated, Body};
@@ -24,6 +26,8 @@ pub struct Services {
     pub credentials: Arc<dyn Credentials>,
     pub registry: Arc<dyn AgentRegistry>,
     pub broker: Arc<dyn MessageBroker>,
+    pub delivery: Arc<dyn DeliveryControl>,
+    pub runs: Arc<dyn RunStatus>,
     pub tasks: Arc<dyn TaskManager>,
     pub gateway: Arc<dyn ToolGateway>,
     pub journal: Arc<dyn JournalReader>,
@@ -41,6 +45,9 @@ pub fn router(services: Services) -> Router {
         .route("/v1/gateway/check", post(check_tool))
         .route("/v1/agents", post(create_agent).get(list_agents))
         .route("/v1/agents/{alias}", get(get_agent))
+        .route("/v1/agents/{alias}/sessions/{session}/retry", post(retry))
+        .route("/v1/agents/{alias}/sessions/{session}/skip", post(skip))
+        .route("/v1/status", get(status))
         .route("/v1/journal", get(read_journal))
         .with_state(Arc::new(services))
 }
@@ -122,6 +129,34 @@ async fn get_agent(
 ) -> Reply<AgentCard> {
     let alias: Alias = parse(&alias)?;
     Ok(Json(s.registry.get_agent(&caller, &alias).await?))
+}
+
+async fn retry(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path((alias, session)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let session: SessionKey = session.parse().map_err(Error::InvalidInput)?;
+    s.delivery.retry(&caller, &parse(&alias)?, session).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn skip(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path((alias, session)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let session: SessionKey = session.parse().map_err(Error::InvalidInput)?;
+    s.delivery.skip(&caller, &parse(&alias)?, session).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Every agent with its Run, unread mail and failing sessions (D77).
+async fn status(State(s): Shared, Authenticated(caller): Authenticated) -> Reply<Vec<AgentStatus>> {
+    let cards = s.registry.list_agents(&caller).await?;
+    let inboxes = s.delivery.inbox_status(&caller).await?;
+    let runs = s.runs.active_runs(&caller).await?;
+    Ok(Json(AgentStatus::of(cards, inboxes, runs)))
 }
 
 /// Exactly one of `chain`, `run` and `task`.

@@ -4,13 +4,15 @@
 //! `SAPCTL_TOKEN`: an argument would show up in `ps` and the shell history.
 
 mod client;
+mod status;
 
 use clap::{Args, Parser, Subcommand};
 use client::Client;
 use control_plane_common::broker::NewMessage;
 use control_plane_common::registry::AgentCard;
+use control_plane_common::status::AgentStatus;
 use control_plane_common::tasks::{NewTask, TaskResult, TaskStatus, TaskUpdate};
-use control_plane_common::{Alias, CorrelationId, MessageId, RunId, SessionKey, TaskId};
+use control_plane_common::{Alias, CorrelationId, MessageId, RunId, SessionKey, TaskId, Timestamp};
 use reqwest::Method;
 use serde::Serialize;
 use serde_json::Value;
@@ -51,6 +53,16 @@ enum Command {
     Tasks(TasksCommand),
     /// Agent Journal of one chain, Run or task.
     Journal(JournalArgs),
+    /// Every agent: its Run, unread mail and failing sessions (D77).
+    Status {
+        /// Print the API's JSON instead of tables.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delivers a failing or stuck session again (D77).
+    Retry { agent: Alias, session: SessionKey },
+    /// Marks a session's unread messages read without delivering them (D77).
+    Skip { agent: Alias, session: SessionKey },
 }
 
 #[derive(Subcommand)]
@@ -111,10 +123,8 @@ struct JournalArgs {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli).await {
-        Ok(reply) => {
-            if let Some(reply) = reply {
-                println!("{reply:#}");
-            }
+        Ok(output) => {
+            print!("{output}");
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -124,10 +134,23 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(cli: Cli) -> Result<Option<Value>, String> {
+/// What to print: the reply as JSON, or as tables for `status`.
+async fn run(cli: Cli) -> Result<String, String> {
     let token = std::env::var("SAPCTL_TOKEN").map_err(|_| "SAPCTL_TOKEN is not set")?;
+    let tables = matches!(cli.command, Command::Status { json: false });
     let (method, path, body) = request(cli.command)?;
-    Client::new(&cli.url, token).call(method, &path, body).await
+    let reply = Client::new(&cli.url, token)
+        .call(method, &path, body)
+        .await?;
+    Ok(match reply {
+        Some(reply) if tables => {
+            let agents: Vec<AgentStatus> =
+                serde_json::from_value(reply).map_err(|e| format!("invalid reply: {e}"))?;
+            status::render(&agents, Timestamp::now())
+        }
+        Some(reply) => format!("{reply:#}\n"),
+        None => String::new(),
+    })
 }
 
 /// The API request a command stands for. Path parts are typed values, so they
@@ -206,6 +229,17 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
             };
             (Method::GET, format!("/v1/journal?{filter}"), None)
         }
+        Command::Status { .. } => (Method::GET, "/v1/status".into(), None),
+        Command::Retry { agent, session } => (
+            Method::POST,
+            format!("/v1/agents/{}/sessions/{session}/retry", agent.as_str()),
+            None,
+        ),
+        Command::Skip { agent, session } => (
+            Method::POST,
+            format!("/v1/agents/{}/sessions/{session}/skip", agent.as_str()),
+            None,
+        ),
     })
 }
 
@@ -283,6 +317,18 @@ mod tests {
         );
         // A link without a result has nowhere to go.
         assert!(parse(&["tasks", "update", &id, "--link", "a"]).is_err());
+    }
+
+    #[test]
+    fn retry_and_skip_name_an_agent_and_a_session() {
+        let session = SessionKey::Task(TaskId::new()).to_string();
+        let (method, path, body) = request_of(&["retry", "coder", &session]);
+        assert_eq!(method, Method::POST);
+        assert_eq!(path, format!("/v1/agents/coder/sessions/{session}/retry"));
+        assert!(body.is_none());
+        let (_, path, _) = request_of(&["skip", "coder", &session]);
+        assert!(path.ends_with("/skip"));
+        assert!(parse(&["retry", "coder", "inbox"]).is_err());
     }
 
     #[test]

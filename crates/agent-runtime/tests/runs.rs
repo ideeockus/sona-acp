@@ -6,10 +6,11 @@ use control_plane_agent_runtime::{Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentCard, AgentDirectory, Credentials, ModelRef, Secret};
+use control_plane_common::runtime::RunStatus;
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId, Timestamp,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -77,10 +78,13 @@ impl Credentials for Tokens {
 
 // ---- Broker ----
 
-/// Messages in delivery order, the ids already read, and notifications like Broker's.
+/// Messages in delivery order, the ids already read, failures in a row and stuck
+/// sessions, and notifications like Broker's.
 struct Inbox {
     messages: Mutex<Vec<Message>>,
     read: Mutex<HashSet<MessageId>>,
+    failures: Mutex<HashMap<SessionKey, u32>>,
+    stuck: Mutex<HashSet<SessionKey>>,
     notifications: broadcast::Sender<Alias>,
 }
 
@@ -89,6 +93,8 @@ impl Default for Inbox {
         Self {
             messages: Mutex::default(),
             read: Mutex::default(),
+            failures: Mutex::default(),
+            stuck: Mutex::default(),
             notifications: broadcast::channel(16).0,
         }
     }
@@ -135,7 +141,9 @@ impl InboxDelivery for Inbox {
     }
 
     async fn next_batch(&self, agent: &Alias) -> Result<Option<InboxBatch>> {
-        let unread = self.unread(agent);
+        let mut unread = self.unread(agent);
+        let stuck = self.stuck.lock().unwrap().clone();
+        unread.retain(|m| !stuck.contains(&m.session()));
         let Some(session) = unread.first().map(Message::session) else {
             return Ok(None);
         };
@@ -169,6 +177,19 @@ impl InboxDelivery for Inbox {
                 break;
             }
         }
+        self.failures.lock().unwrap().remove(&session);
+        Ok(())
+    }
+
+    async fn record_failure(&self, _: &Alias, session: SessionKey, _: &str) -> Result<u32> {
+        let mut failures = self.failures.lock().unwrap();
+        let count = failures.entry(session).or_default();
+        *count += 1;
+        Ok(*count)
+    }
+
+    async fn mark_stuck(&self, _: &Alias, session: SessionKey) -> Result<()> {
+        self.stuck.lock().unwrap().insert(session);
         Ok(())
     }
 }
@@ -207,6 +228,8 @@ enum Script {
     SettleWhen(Arc<Notify>),
     /// Exits with an error without settling.
     Crash,
+    /// Settles normally after the model provider failed.
+    ModelError,
 }
 
 #[derive(Default)]
@@ -268,8 +291,13 @@ impl Launcher for FakePi {
             let tool = br#"{"type":"tool_execution_end","toolCallId":"c1","toolName":"read","result":{},"isError":false}"#;
             pi_stdout.write_all(tool).await.unwrap();
             pi_stdout.write_all(b"\n").await.unwrap();
-            if let Script::SettleWhen(release) = script {
+            if let Script::SettleWhen(release) = &script {
                 release.notified().await;
+            }
+            if let Script::ModelError = script {
+                let failed = br#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"503 from provider"}}"#;
+                pi_stdout.write_all(failed).await.unwrap();
+                pi_stdout.write_all(b"\n").await.unwrap();
             }
             pi_stdout
                 .write_all(b"{\"type\":\"agent_settled\"}\n")
@@ -313,6 +341,7 @@ fn setup(scripts: Vec<Script>) -> Setup {
         api_url: "http://api.test".to_owned(),
         models_json: None,
         provider_env: vec![("FAKE_KEY".to_owned(), "k".to_owned())],
+        retry_delays: vec![Duration::from_millis(10), Duration::from_millis(20)],
     };
     let runtime = Runtime::new(
         config,
@@ -501,26 +530,106 @@ async fn same_session_is_steered_other_sessions_wait() {
 }
 
 #[tokio::test]
-async fn a_crashed_run_leaves_messages_unread() {
-    let s = setup(vec![Script::Crash]);
+async fn a_crashed_run_is_retried_after_a_pause() {
+    let s = setup(vec![Script::Crash, Script::Settle]);
     let first = message("coder", None, CorrelationId::new());
     s.inbox.add(first.clone());
 
     s.runtime.start().await.unwrap();
-    eventually("run finished", || s.journal.actions().len() == 2).await;
+    eventually("message read", || s.inbox.is_read(&first)).await;
 
-    assert!(!s.inbox.is_read(&first));
-    assert_eq!(
-        s.journal.actions()[1],
-        ("run_finished".to_owned(), Some(Outcome::Error))
-    );
+    let finished: Vec<_> = s
+        .journal
+        .actions()
+        .into_iter()
+        .filter(|(action, _)| action == "run_finished")
+        .map(|(_, result)| result)
+        .collect();
+    assert_eq!(finished, [Some(Outcome::Error), Some(Outcome::Ok)]);
+    // Every Run's token died with it, the failed one too.
     assert_eq!(
         *s.tokens.issued.lock().unwrap(),
         *s.tokens.revoked.lock().unwrap()
     );
-    // No retry loop: the agent waits for its next wake (D77 retries come later).
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(s.pi.specs.lock().unwrap().len(), 1);
+    assert!(s.inbox.failures.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_session_is_stuck_after_the_last_attempt() {
+    let s = setup(vec![Script::Crash, Script::ModelError, Script::Crash]);
+    let failing = message("coder", None, CorrelationId::new());
+    let other = message("coder", None, CorrelationId::new());
+    s.inbox.add(failing.clone());
+    s.inbox.add(other.clone());
+
+    s.runtime.start().await.unwrap();
+    // Once the failing session is stuck, the agent's other sessions go on.
+    eventually("other session read", || s.inbox.is_read(&other)).await;
+
+    assert!(!s.inbox.is_read(&failing));
+    assert!(s.inbox.stuck.lock().unwrap().contains(&failing.session()));
+    assert_eq!(s.pi.specs.lock().unwrap().len(), 4);
+    let events = s.journal.0.lock().unwrap();
+    let stuck = events.iter().find(|e| e.action == "session_stuck").unwrap();
+    assert_eq!(stuck.correlation_id, Some(failing.correlation_id));
+    assert_eq!(
+        stuck.reason.as_deref(),
+        Some("internal error: Pi exited before settling")
+    );
+}
+
+#[tokio::test]
+async fn a_failed_model_fails_the_run() {
+    let s = setup(vec![Script::ModelError, Script::Settle]);
+    let first = message("coder", None, CorrelationId::new());
+    s.inbox.add(first.clone());
+
+    s.runtime.start().await.unwrap();
+    eventually("message read", || s.inbox.is_read(&first)).await;
+
+    let events = s.journal.0.lock().unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.action == "run_finished" && e.result == Some(Outcome::Error))
+        .unwrap();
+    assert_eq!(
+        failed.reason.as_deref(),
+        Some("internal error: the model failed: 503 from provider")
+    );
+}
+
+#[tokio::test]
+async fn the_operator_sees_active_runs() {
+    let release = Arc::new(Notify::new());
+    let s = setup(vec![Script::SettleWhen(release.clone())]);
+    let first = message("coder", None, CorrelationId::new());
+    s.inbox.add(first.clone());
+    let operator = Caller::Operator {
+        alias: alias_of("user"),
+    };
+
+    s.runtime.start().await.unwrap();
+    eventually("run started", || s.pi.specs.lock().unwrap().len() == 1).await;
+    let runs = s.runtime.active_runs(&operator).await.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        (runs[0].agent.as_str(), runs[0].session),
+        ("coder", first.session())
+    );
+
+    let agent = Caller::Agent {
+        alias: alias_of("coder"),
+        run_id: runs[0].run_id,
+        correlation_id: first.correlation_id,
+    };
+    assert!(matches!(
+        s.runtime.active_runs(&agent).await,
+        Err(Error::Forbidden(_))
+    ));
+
+    release.notify_one();
+    eventually("message read", || s.inbox.is_read(&first)).await;
+    assert!(s.runtime.active_runs(&operator).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -547,6 +656,7 @@ async fn relative_paths_are_refused() {
         api_url: String::new(),
         models_json: None,
         provider_env: Vec::new(),
+        retry_delays: Vec::new(),
     };
     let result = Runtime::new(
         config,

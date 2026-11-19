@@ -2,14 +2,16 @@
 
 use async_trait::async_trait;
 use control_plane_common::broker::{
-    InboxBatch, InboxDelivery, Message, MessageBroker, NewMessage, Notifications,
+    DeliveryControl, FailingSession, InboxBatch, InboxDelivery, InboxStatus, Message,
+    MessageBroker, NewMessage, Notifications,
 };
 use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
 use control_plane_common::registry::{AgentDirectory, Credentials};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, SessionKey, TaskId, Timestamp,
 };
-use sqlx::SqlitePool;
+use sqlx::{SqliteExecutor, SqlitePool};
+use std::collections::{BTreeMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -215,7 +217,15 @@ impl InboxDelivery for SqliteBroker {
     }
 
     async fn next_batch(&self, agent: &Alias) -> Result<Option<InboxBatch>> {
+        let stuck: Vec<String> =
+            sqlx::query_scalar("SELECT session FROM failures WHERE recipient = ? AND stuck = 1")
+                .bind(agent.as_str())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+        let stuck: HashSet<String> = stuck.into_iter().collect();
         let mut unread = self.unread(agent).await?;
+        unread.retain(|m| !stuck.contains(&m.session().to_string()));
         let Some(oldest) = unread.first() else {
             return Ok(None);
         };
@@ -252,17 +262,165 @@ impl InboxDelivery for SqliteBroker {
             Error::InvalidInput(format!("message {up_to} is not in this session of {agent}"))
         })?;
 
-        sqlx::query(
-            "INSERT INTO cursors (recipient, session, up_to) VALUES (?, ?, ?)
-             ON CONFLICT (recipient, session) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)",
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        move_cursor(&mut *tx, agent, session, seq).await?;
+        forget_failures(&mut *tx, agent, session).await?;
+        tx.commit().await.map_err(internal)
+    }
+
+    async fn record_failure(&self, agent: &Alias, session: SessionKey, error: &str) -> Result<u32> {
+        let count: i64 = sqlx::query_scalar(
+            "INSERT INTO failures (recipient, session, count, last_error) VALUES (?, ?, 1, ?)
+             ON CONFLICT (recipient, session)
+             DO UPDATE SET count = count + 1, last_error = excluded.last_error
+             RETURNING count",
         )
         .bind(agent.as_str())
         .bind(session.to_string())
-        .bind(seq)
-        .execute(&self.pool)
+        .bind(error)
+        .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
+        u32::try_from(count).map_err(|e| Error::Internal(e.to_string()))
+    }
+
+    async fn mark_stuck(&self, agent: &Alias, session: SessionKey) -> Result<()> {
+        let updated =
+            sqlx::query("UPDATE failures SET stuck = 1 WHERE recipient = ? AND session = ?")
+                .bind(agent.as_str())
+                .bind(session.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
+        if updated.rows_affected() == 0 {
+            return Err(Error::Internal(format!(
+                "{session} of {agent} has no failures to stop on"
+            )));
+        }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl DeliveryControl for SqliteBroker {
+    async fn inbox_status(&self, caller: &Caller) -> Result<Vec<InboxStatus>> {
+        require_operator(caller)?;
+        let unread: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT m.recipient, COUNT(*)
+             FROM messages m
+             LEFT JOIN cursors c ON c.recipient = m.recipient AND c.session = m.session
+             WHERE m.seq > COALESCE(c.up_to, 0)
+             GROUP BY m.recipient",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let failures: Vec<(String, String, i64, String, i64)> = sqlx::query_as(
+            "SELECT recipient, session, count, last_error, stuck FROM failures
+             ORDER BY recipient, session",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        let mut inboxes = BTreeMap::new();
+        for (recipient, count) in unread {
+            inbox(&mut inboxes, &recipient)?.unread =
+                u32::try_from(count).map_err(|e| Error::Internal(e.to_string()))?;
+        }
+        for (recipient, session, count, last_error, stuck) in failures {
+            inbox(&mut inboxes, &recipient)?
+                .failing
+                .push(FailingSession {
+                    session: parse(&session)?,
+                    failures: u32::try_from(count).map_err(|e| Error::Internal(e.to_string()))?,
+                    last_error,
+                    stuck: stuck != 0,
+                });
+        }
+
+        // The operator's own unread mail is not an agent's inbox.
+        let mut agents = Vec::new();
+        for (alias, status) in inboxes {
+            if self.directory.agent(&alias).await.is_ok() {
+                agents.push(status);
+            }
+        }
+        Ok(agents)
+    }
+
+    async fn retry(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()> {
+        require_operator(caller)?;
+        if forget_failures(&self.pool, agent, session).await? == 0 {
+            return Err(Error::NotFound(format!("failures of {agent} in {session}")));
+        }
+        let _ = self.notifications.send(agent.clone());
+        Ok(())
+    }
+
+    async fn skip(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()> {
+        require_operator(caller)?;
+        let newest = self.unread_in(agent, session).await?.last().map(|m| m.id);
+        let newest = newest
+            .ok_or_else(|| Error::NotFound(format!("unread messages of {agent} in {session}")))?;
+        self.advance_cursor(agent, session, newest).await
+    }
+}
+
+/// The status of `recipient`, added empty if new.
+fn inbox<'a>(
+    inboxes: &'a mut BTreeMap<Alias, InboxStatus>,
+    recipient: &str,
+) -> Result<&'a mut InboxStatus> {
+    let agent: Alias = parse(recipient)?;
+    Ok(inboxes.entry(agent.clone()).or_insert_with(|| InboxStatus {
+        agent,
+        unread: 0,
+        failing: Vec::new(),
+    }))
+}
+
+async fn move_cursor(
+    db: impl SqliteExecutor<'_>,
+    agent: &Alias,
+    session: SessionKey,
+    seq: i64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO cursors (recipient, session, up_to) VALUES (?, ?, ?)
+         ON CONFLICT (recipient, session) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)",
+    )
+    .bind(agent.as_str())
+    .bind(session.to_string())
+    .bind(seq)
+    .execute(db)
+    .await
+    .map_err(internal)?;
+    Ok(())
+}
+
+/// Returns how many rows went: 0 or 1.
+async fn forget_failures(
+    db: impl SqliteExecutor<'_>,
+    agent: &Alias,
+    session: SessionKey,
+) -> Result<u64> {
+    let deleted = sqlx::query("DELETE FROM failures WHERE recipient = ? AND session = ?")
+        .bind(agent.as_str())
+        .bind(session.to_string())
+        .execute(db)
+        .await
+        .map_err(internal)?;
+    Ok(deleted.rows_affected())
+}
+
+fn require_operator(caller: &Caller) -> Result<()> {
+    match caller {
+        Caller::Operator { .. } => Ok(()),
+        other => Err(Error::Forbidden(format!(
+            "{} is not the operator",
+            other.alias()
+        ))),
     }
 }
 
