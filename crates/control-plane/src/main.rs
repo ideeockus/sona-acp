@@ -19,7 +19,6 @@ use control_plane_tool_gateway::Gateway;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::io::IsTerminal;
-use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -121,9 +120,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
         RuntimeConfig {
             data_dir: config.data_dir.clone(),
             extension: config.extension,
-            // OrbStack and Docker Desktop route this name to the host's loopback.
-            // Native Docker on Linux does not; revisit with cloud hosting (O11).
-            api_url: format!("http://host.docker.internal:{}", config.port),
+            api_url: config.api_url,
             models_json: config.models_json,
             provider_env: provider_env(&config.provider_env)?,
         },
@@ -131,7 +128,10 @@ async fn serve(config: Config) -> Result<(), Failure> {
         registry.clone(),
         broker.clone(),
         journal.clone(),
-        Arc::new(DockerLauncher::new(config.agent_image)),
+        Arc::new(DockerLauncher::new(
+            config.agent_image,
+            config.agent_network,
+        )),
     )?;
     runtime.start().await?;
 
@@ -143,7 +143,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
         gateway,
         journal,
     });
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, config.port)).await?;
+    let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(address = %listener.local_addr()?, "listening");
 
     // Active Runs are not drained on shutdown: the next start revokes their tokens

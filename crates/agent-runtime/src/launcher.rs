@@ -51,12 +51,15 @@ pub trait Launcher: Send + Sync {
 /// Runs Pi in a fresh container per Run, through the `docker` CLI (D83).
 pub struct DockerLauncher {
     image: String,
+    network: Option<String>,
 }
 
 impl DockerLauncher {
-    pub fn new(image: impl Into<String>) -> Self {
+    /// `network` is the Docker network agents join; Docker's default bridge if `None` (D88).
+    pub fn new(image: impl Into<String>, network: Option<String>) -> Self {
         Self {
             image: image.into(),
+            network,
         }
     }
 
@@ -81,6 +84,9 @@ impl DockerLauncher {
         ]
         .map(str::to_owned)
         .to_vec();
+        if let Some(network) = &self.network {
+            args.extend(["--network".to_owned(), network.clone()]);
+        }
         for mount in &spec.mounts {
             let mut volume = format!("{}:{}", mount.host.display(), mount.inside);
             if mount.read_only {
@@ -189,7 +195,8 @@ mod tests {
                 },
             ],
         };
-        let args = DockerLauncher::new("sona-plane-agent:dev").args(&spec);
+        let launcher = DockerLauncher::new("sona-plane-agent:dev", Some("sona-agents".to_owned()));
+        let args = launcher.args(&spec);
         let line = args.join(" ");
 
         assert!(!line.contains("secret"));
@@ -200,6 +207,7 @@ mod tests {
             "--cap-drop ALL",
             "--security-opt no-new-privileges",
             "--read-only",
+            "--network sona-agents",
         ] {
             assert!(line.contains(hardening), "missing {hardening}");
         }

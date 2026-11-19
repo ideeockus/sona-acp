@@ -5,6 +5,7 @@
 
 use control_plane_common::Alias;
 use serde::Deserialize;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
@@ -14,9 +15,13 @@ pub struct Config {
     pub operator: Alias,
     /// Databases, the journal, agent workdirs and per-Run files (D81). Absolute.
     pub data_dir: PathBuf,
-    /// The API port. The API listens on 127.0.0.1 only (D85).
-    #[serde(default = "default_port")]
-    pub port: u16,
+    /// Where the API listens: loopback, or the gateway of the agent network (D88).
+    #[serde(default = "default_listen")]
+    pub listen: SocketAddr,
+    /// Where agents reach the API from their containers (D88).
+    pub api_url: String,
+    /// The Docker network agents join (D88).
+    pub agent_network: Option<String>,
     /// The image agents run in (D61).
     pub agent_image: String,
     /// The directory of our Pi extension. Absolute.
@@ -31,8 +36,8 @@ pub struct Config {
     pub journal_retention_days: u32,
 }
 
-fn default_port() -> u16 {
-    7700
+fn default_listen() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 7700))
 }
 
 fn default_retention_days() -> u32 {
@@ -59,7 +64,22 @@ impl Config {
                 return Err(format!("{} must be an absolute path", path.display()));
             }
         }
+        if !is_internal(config.listen.ip()) {
+            return Err(format!(
+                "listen {} must be a loopback or private address: the API never faces the internet",
+                config.listen
+            ));
+        }
         Ok(config)
+    }
+}
+
+/// Loopback, or a private IPv4 address such as a Docker network gateway.
+/// `0.0.0.0` is neither: it would listen on public interfaces too.
+fn is_internal(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
+        IpAddr::V6(ip) => ip.is_loopback(),
     }
 }
 
@@ -72,12 +92,14 @@ mod tests {
         data_dir = "/var/lib/control-plane"
         agent_image = "sona-plane-agent:dev"
         extension = "/opt/control-plane/extension"
+        api_url = "http://host.docker.internal:7700"
     "#;
 
     #[test]
     fn fills_defaults() {
         let config = Config::parse(MINIMAL).unwrap();
-        assert_eq!(config.port, 7700);
+        assert_eq!(config.listen, "127.0.0.1:7700".parse().unwrap());
+        assert!(config.agent_network.is_none());
         assert_eq!(config.journal_retention_days, 7);
         assert!(config.provider_env.is_empty());
         assert!(config.models_json.is_none());
@@ -99,8 +121,19 @@ mod tests {
     #[test]
     fn rejects_unknown_keys() {
         // A typo must not silently fall back to a default.
-        let typo = format!("{MINIMAL}\nprot = 8080");
+        let typo = format!("{MINIMAL}\nlisten_on = \"127.0.0.1:8080\"");
         assert!(Config::parse(&typo).is_err());
+    }
+
+    #[test]
+    fn listens_only_on_internal_addresses() {
+        let listen = |address: &str| Config::parse(&format!("{MINIMAL}\nlisten = \"{address}\""));
+        assert!(listen("127.0.0.1:7700").is_ok());
+        assert!(listen("172.30.0.1:7700").is_ok());
+        assert!(listen("[::1]:7700").is_ok());
+        for public in ["0.0.0.0:7700", "[::]:7700", "203.0.113.5:7700"] {
+            assert!(listen(public).unwrap_err().contains("private"), "{public}");
+        }
     }
 
     #[test]

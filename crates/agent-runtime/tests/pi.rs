@@ -46,7 +46,7 @@ async fn real_pi_answers_over_rpc_in_a_container() {
         .to_vec(),
         mounts: vec![mount("work", "/work"), mount("pi", "/agent/pi")],
     };
-    let launched = DockerLauncher::new("sona-plane-agent:dev")
+    let launched = DockerLauncher::new("sona-plane-agent:dev", None)
         .start(spec)
         .await
         .unwrap();
