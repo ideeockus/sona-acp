@@ -24,3 +24,8 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "time"] }
