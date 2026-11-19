@@ -5,7 +5,9 @@
 //! cargo test -p control-plane-agent-runtime -- --ignored
 //! ```
 
-use control_plane_agent_runtime::launcher::{DockerLauncher, Launcher, Mount, RunSpec};
+use control_plane_agent_runtime::launcher::{
+    ContainerUser, DockerLauncher, Launcher, Mount, RunSpec,
+};
 use control_plane_agent_runtime::rpc::{Command, CommandWriter, Event, EventReader};
 use control_plane_common::RunId;
 use std::path::PathBuf;
@@ -46,10 +48,14 @@ async fn real_pi_answers_over_rpc_in_a_container() {
         .to_vec(),
         mounts: vec![mount("work", "/work"), mount("pi", "/agent/pi")],
     };
-    let launched = DockerLauncher::new("sona-plane-agent:dev", None)
-        .start(spec)
-        .await
-        .unwrap();
+    let launched = DockerLauncher::new(
+        "sona-plane-agent:dev",
+        None,
+        ContainerUser::owner_of(&root).unwrap(),
+    )
+    .start(spec)
+    .await
+    .unwrap();
     let mut commands = CommandWriter::new(launched.stdin);
     let mut events = EventReader::new(launched.stdout);
     let mut process = launched.process;

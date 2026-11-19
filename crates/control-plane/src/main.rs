@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use control_plane_agent_journal::{Clock, FileJournal};
 use control_plane_agent_registry::SqliteRegistry;
-use control_plane_agent_runtime::launcher::DockerLauncher;
+use control_plane_agent_runtime::launcher::{ContainerUser, DockerLauncher};
 use control_plane_agent_runtime::{Runtime, RuntimeConfig};
 use control_plane_api::{Services, router};
 use control_plane_common::Timestamp;
@@ -131,6 +131,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
         Arc::new(DockerLauncher::new(
             config.agent_image,
             config.agent_network,
+            ContainerUser::owner_of(&config.data_dir)?,
         )),
     )?;
     runtime.start().await?;

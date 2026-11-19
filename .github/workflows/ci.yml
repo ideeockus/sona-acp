@@ -48,3 +48,46 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm test
+
+  # A real Pi in containers on Linux, set up the way a VPS is (D88).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.90
+        run: |
+          rustup toolchain install 1.90 --profile minimal
+          rustup default 1.90
+
+      - name: Build the agent image
+        run: docker build -t sona-plane-agent:dev images/agent
+
+      - name: Create the agent network
+        run: >-
+          docker network create --subnet 172.30.0.0/24
+          -o com.docker.network.bridge.enable_icc=false sona-agents
+
+      # The host reaches the peer, so a failure from another agent means isolation (O41).
+      - name: Check that agents cannot reach each other
+        run: |
+          docker run -d --rm --name peer --network sona-agents --entrypoint node \
+            sona-plane-agent:dev -e 'require("http").createServer((q, s) => s.end()).listen(8080)'
+          peer=$(docker inspect -f '{{(index .NetworkSettings.Networks "sona-agents").IPAddress}}' peer)
+          curl --silent --retry 10 --retry-connrefused --retry-delay 1 "http://$peer:8080" > /dev/null
+          if docker run --rm --network sona-agents --entrypoint node sona-plane-agent:dev -e \
+            "fetch('http://$peer:8080', { signal: AbortSignal.timeout(3000) }).then(() => process.exit(0), () => process.exit(1))"
+          then
+            echo "an agent reached another agent"
+            exit 1
+          fi
+          docker kill peer
+
+      - name: Run the tests that need Docker
+        env:
+          SONA_E2E_LISTEN: 172.30.0.1
+          SONA_E2E_HOST: 172.30.0.1
+          SONA_E2E_NETWORK: sona-agents
+        run: cargo test --locked -- --ignored

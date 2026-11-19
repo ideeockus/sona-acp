@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use control_plane_common::layout::WORKDIR;
 use control_plane_common::{Error, Result};
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::process::{Child, Command};
@@ -48,18 +49,40 @@ pub trait Launcher: Send + Sync {
     async fn start(&self, spec: RunSpec) -> Result<Launched>;
 }
 
+/// Who Pi runs as inside the container (D90).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContainerUser {
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl ContainerUser {
+    /// The owner of `path`. Bind mounts keep numeric owners, so running as the owner
+    /// of the data dir lets Pi write its mounts and lets us remove what it wrote.
+    pub fn owner_of(path: &Path) -> Result<Self> {
+        let metadata = std::fs::metadata(path)
+            .map_err(|e| Error::Internal(format!("{}: {e}", path.display())))?;
+        Ok(Self {
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        })
+    }
+}
+
 /// Runs Pi in a fresh container per Run, through the `docker` CLI (D83).
 pub struct DockerLauncher {
     image: String,
     network: Option<String>,
+    user: ContainerUser,
 }
 
 impl DockerLauncher {
     /// `network` is the Docker network agents join; Docker's default bridge if `None` (D88).
-    pub fn new(image: impl Into<String>, network: Option<String>) -> Self {
+    pub fn new(image: impl Into<String>, network: Option<String>, user: ContainerUser) -> Self {
         Self {
             image: image.into(),
             network,
+            user,
         }
     }
 
@@ -84,6 +107,10 @@ impl DockerLauncher {
         ]
         .map(str::to_owned)
         .to_vec();
+        args.extend([
+            "--user".to_owned(),
+            format!("{}:{}", self.user.uid, self.user.gid),
+        ]);
         if let Some(network) = &self.network {
             args.extend(["--network".to_owned(), network.clone()]);
         }
@@ -195,7 +222,12 @@ mod tests {
                 },
             ],
         };
-        let launcher = DockerLauncher::new("sona-plane-agent:dev", Some("sona-agents".to_owned()));
+        let user = ContainerUser {
+            uid: 1001,
+            gid: 1002,
+        };
+        let launcher =
+            DockerLauncher::new("sona-plane-agent:dev", Some("sona-agents".to_owned()), user);
         let args = launcher.args(&spec);
         let line = args.join(" ");
 
@@ -208,6 +240,7 @@ mod tests {
             "--security-opt no-new-privileges",
             "--read-only",
             "--network sona-agents",
+            "--user 1001:1002",
         ] {
             assert!(line.contains(hardening), "missing {hardening}");
         }
