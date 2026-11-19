@@ -415,6 +415,7 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
     }
     assert!(env_of(&spec, "SONA_PLANE_RUN_TOKEN").starts_with("sona_plane_rt_"));
     assert_eq!(env_of(&spec, "SONA_PLANE_API_URL"), "http://api.test");
+    assert_eq!(env_of(&spec, "SONA_PLANE_SESSION"), format!("task-{task}"));
     assert_eq!(env_of(&spec, "FAKE_KEY"), "k");
     assert_eq!(env_of(&spec, "PI_CODING_AGENT_DIR"), "/agent/pi");
     let mounted = |inside: &str| {

@@ -127,7 +127,7 @@ impl Inner {
         let spec = RunSpec {
             name: format!("sona-run-{}", run.run_id),
             args: self.pi_args(run, context),
-            env: self.pi_env(token),
+            env: self.pi_env(run, token),
             mounts: vec![
                 mount(&work, WORKDIR, false),
                 mount(&sessions, SESSIONS_DIR, false),
@@ -240,10 +240,13 @@ impl Inner {
     }
 
     /// The complete environment of Pi: nothing comes from the host (spec §5.4).
-    fn pi_env(&self, token: &Secret) -> Vec<(String, String)> {
+    fn pi_env(&self, run: &Run, token: &Secret) -> Vec<(String, String)> {
+        let session = run.batch.session.to_string();
         let mut env: Vec<(String, String)> = [
             ("SONA_PLANE_RUN_TOKEN", token.expose()),
             ("SONA_PLANE_API_URL", &self.config.api_url),
+            // What `read_messages` reads, so the model never has to copy it (D78).
+            ("SONA_PLANE_SESSION", &session),
             ("PI_CODING_AGENT_DIR", PI_DIR),
             ("HOME", PI_DIR),
             ("PI_OFFLINE", "1"),
