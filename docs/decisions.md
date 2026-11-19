@@ -125,6 +125,7 @@
 | D84 | **Control plane работает на хосте, не в Docker.** Он запускает контейнеры агентов через `docker` CLI, поэтому `docker.sock` в контейнер не пробрасывается. Docker Compose остаётся для сопутствующих сервисов, например RustFS. | Бывший O14. Вернёмся, если появится вариант лучше. Уточняет D46. |
 | D85 | **HTTP API.** Авторизация — `Authorization: Bearer <credential>`, Registry превращает его в `Caller`. Маршруты под `/v1`: `messages`, `sessions/{session}/messages`, `tasks`, `gateway/check`, `agents`, `journal`. Ошибки: `Unauthenticated` → 401, `Forbidden` → 403, `NotFound` → 404, `InvalidInput` → 400, `Internal` → 500; тело — `Error` в JSON, текст внутренней ошибки только в лог. По умолчанию слушаем `127.0.0.1`, порт в конфиге. | Контейнеры на OrbStack достают хост через `host.docker.internal`. Для Linux-сервера адрес пересмотрим. |
 | D86 | **Broker публикует, Runtime подписывается.** Broker ничего не знает о потребителях: в его API есть подписка на уведомления «новое сообщение для агента» (`tokio::sync::broadcast`, в потоке только alias). Runtime подписывается при старте, потом сверяет inbox и дальше слушает поток. Если подписчик отстал и уведомления вытеснены, он сверяет inbox целиком. Зависимость одна: Runtime → Broker. | Заменяет `WakeSink`. Уточняет D12 и D15. |
+| D87 | **Два бинаря.** `control-plane` — долгоживущий процесс со всеми компонентами, подкоманды `init` и `serve`, конфиг TOML через `--config`. `init` идёт прямо в Registry и один раз печатает credential оператора в stdout: API без credential не пустит, а хранится только хэш. `sapctl` — HTTP-клиент: адрес из `--url` или `SAPCTL_URL`, токен только из `SAPCTL_TOKEN`, чтобы не светился в `ps` и истории. Логи — в stderr, `RUST_LOG`, по умолчанию `info`; собирает и ротирует тот, кто запустил. Агенты ходят в API по `host.docker.internal`. | В конфиге нет секретов (D32). На Linux без Docker Desktop `host.docker.internal` до loopback хоста не доходит — вернёмся с O11. |
 
 ## Склоняемся
 
@@ -170,8 +171,8 @@ crates/
   agent-memory    записи памяти
   agent-runtime   Agent Runtime, launcher, протокол Pi RPC
   api             HTTP API (axum)
-  server          бинарь: собирает компоненты
-  cli             CLI оператора
+  control-plane   бинарь `control-plane`: собирает компоненты (D87)
+  cli             бинарь `sapctl`, CLI оператора
 extension/        Pi-расширение на TS
 ```
 
@@ -185,9 +186,10 @@ extension/        Pi-расширение на TS
 | сериализация | `serde`, `serde_json` | — |
 | БД | `sqlx` (SQLite), D33 | — |
 | id | `uuid` v7, D34 | — |
-| ошибки | `thiserror` в crate'ах, `anyhow` только в бинарях | — |
+| ошибки | `thiserror` в crate'ах, в бинарях `Box<dyn Error>` | `anyhow` |
 | логи | `tracing`, `tracing-subscriber` | — |
-| CLI | `clap` (derive) | — |
+| CLI | `clap` (derive) | ручной разбор, `argh` |
+| HTTP-клиент `sapctl` | `reqwest` без default features | `ureq`, `hyper-util` |
 | конфиг | TOML через `toml` + `serde` | `figment` |
 | S3 | `rust-s3` (D5) | — |
 | cron | `croner` (D19) | — |

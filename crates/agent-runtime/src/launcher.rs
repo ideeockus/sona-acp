@@ -107,7 +107,7 @@ impl Launcher for DockerLauncher {
             .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Pi writes diagnostics to stderr; they go to the server's stderr for now.
+            // Pi writes diagnostics to stderr; they go to the control plane's stderr for now.
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()

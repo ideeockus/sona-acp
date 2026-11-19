@@ -1,0 +1,11 @@
+# The control plane configuration: control-plane --config <file> init | serve
+# No secrets here: provider_env names variables of the control plane's environment.
+
+operator = "user"
+data_dir = "/var/lib/control-plane"
+# port = 7700
+agent_image = "sona-plane-agent:dev"
+extension = "/opt/control-plane/extension"
+# models_json = "/etc/control-plane/models.json"
+# provider_env = ["ANTHROPIC_API_KEY"]
+# journal_retention_days = 7
