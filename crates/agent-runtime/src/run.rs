@@ -302,7 +302,7 @@ impl Inner {
             &context,
             // The model sees only granted tools; Gateway checks every call anyway (D22).
             "--tools",
-            &card.allow_tools.join(","),
+            &card.tools().join(","),
             "--no-extensions",
             "-e",
             EXTENSION_DIR,

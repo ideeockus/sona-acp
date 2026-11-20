@@ -217,3 +217,8 @@ async fn only_agents_are_checked() {
         Err(Error::Forbidden(_))
     ));
 }
+
+#[tokio::test]
+async fn reading_messages_needs_no_grant() {
+    assert_eq!(verdict("read_messages", None).await, Verdict::Allow);
+}

@@ -27,6 +27,27 @@ pub struct AgentCard {
     pub prompt: String,
 }
 
+/// Tools every agent has, whatever its grant (D94). A prompt only says that mail
+/// arrived (D80), so an agent without `read_messages` could not learn why it woke.
+pub const ALWAYS_GRANTED: &[&str] = &["read_messages"];
+
+impl AgentCard {
+    /// The tools the agent may use: what is always granted, then its grant.
+    pub fn tools(&self) -> Vec<&str> {
+        let mut tools = ALWAYS_GRANTED.to_vec();
+        for tool in &self.allow_tools {
+            if !tools.contains(&tool.as_str()) {
+                tools.push(tool);
+            }
+        }
+        tools
+    }
+
+    pub fn may_use(&self, tool: &str) -> bool {
+        ALWAYS_GRANTED.contains(&tool) || self.allow_tools.iter().any(|t| t == tool)
+    }
+}
+
 /// A credential in clear text. Exists only between issuing and handing over.
 ///
 /// Neither `Debug` nor serialization can leak it, so it stays out of logs by construction.
@@ -106,6 +127,25 @@ mod tests {
         Arc<dyn AgentDirectory>,
         Arc<dyn Credentials>,
     );
+
+    #[test]
+    fn reading_messages_is_always_granted() {
+        let card = AgentCard {
+            alias: "coder".parse().unwrap(),
+            title: String::new(),
+            model: ModelRef {
+                provider: "fake".to_owned(),
+                id: "fake-1".to_owned(),
+            },
+            allow_tools: vec!["read".to_owned(), "read_messages".to_owned()],
+            allow_message_to: Vec::new(),
+            prompt: String::new(),
+        };
+        assert_eq!(card.tools(), ["read_messages", "read"]);
+        assert!(card.may_use("read_messages"));
+        assert!(card.may_use("read"));
+        assert!(!card.may_use("bash"));
+    }
 
     #[test]
     fn secret_debug_is_redacted() {

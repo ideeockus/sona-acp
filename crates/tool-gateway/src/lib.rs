@@ -22,7 +22,7 @@ impl Gateway {
     /// The policy itself, without recording.
     async fn decide(&self, caller: &Caller, call: &ToolCall) -> Result<Verdict> {
         let card = self.directory.agent(caller.alias()).await?;
-        if !card.allow_tools.contains(&call.tool) {
+        if !card.may_use(&call.tool) {
             return Ok(deny(format!("{} is not granted", call.tool)));
         }
         Ok(match paths::check(&call.tool, call.path.as_deref()) {

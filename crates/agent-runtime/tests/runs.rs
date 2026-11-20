@@ -454,7 +454,10 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
     let spec = s.pi.specs.lock().unwrap()[0].clone();
     assert_eq!(arg_after(&spec, "--session-id"), format!("task-{task}"));
     assert_eq!(arg_after(&spec, "--model"), "fake/fake-1");
-    assert_eq!(arg_after(&spec, "--tools"), "read,send_message");
+    assert_eq!(
+        arg_after(&spec, "--tools"),
+        "read_messages,read,send_message"
+    );
     assert_eq!(arg_after(&spec, "-e"), "/agent/extension");
     assert_eq!(arg_after(&spec, "--session-dir"), "/agent/sessions");
     assert_eq!(arg_after(&spec, "--system-prompt"), "You are @coder.");
