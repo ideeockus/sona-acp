@@ -237,7 +237,7 @@ async fn add_coder(operator: &Operator) {
         "alias": "coder",
         "title": "Writes code",
         "model": { "provider": "fake", "id": "fake-1" },
-        "allow_tools": ["write", "read", "send_message"],
+        "access": ["read_files", "write_files", "send_messages"],
         "allow_message_to": ["user"],
         "prompt": "You are @coder.",
     });

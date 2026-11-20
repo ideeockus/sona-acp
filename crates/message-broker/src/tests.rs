@@ -83,7 +83,7 @@ fn card(name: &str, allow_message_to: &[&str]) -> AgentCard {
             provider: "fake".to_owned(),
             id: "fake".to_owned(),
         },
-        allow_tools: Vec::new(),
+        access: Vec::new(),
         allow_message_to: allow_message_to.iter().map(|a| alias(a)).collect(),
         prompt: String::new(),
     }

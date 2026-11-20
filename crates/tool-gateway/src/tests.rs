@@ -1,5 +1,5 @@
 use super::*;
-use control_plane_common::registry::{AgentCard, ModelRef};
+use control_plane_common::registry::{Access, AgentCard, ModelRef};
 use control_plane_common::{Alias, CorrelationId, RunId};
 use std::sync::Mutex;
 
@@ -19,17 +19,7 @@ impl AgentDirectory for Directory {
                 provider: "fake".to_owned(),
                 id: "fake".to_owned(),
             },
-            allow_tools: [
-                "read",
-                "write",
-                "edit",
-                "grep",
-                "ls",
-                "send_message",
-                "mcp__gitlab__get_issue",
-            ]
-            .map(String::from)
-            .to_vec(),
+            access: vec![Access::ReadFiles, Access::WriteFiles, Access::SendMessages],
             allow_message_to: Vec::new(),
             prompt: String::new(),
         })
@@ -88,10 +78,7 @@ fn is_deny(verdict: &Verdict) -> bool {
 #[tokio::test]
 async fn granted_tools_are_allowed() {
     assert_eq!(verdict("send_message", None).await, Verdict::Allow);
-    assert_eq!(
-        verdict("mcp__gitlab__get_issue", None).await,
-        Verdict::Allow
-    );
+    assert_eq!(verdict("read_messages", None).await, Verdict::Allow);
 }
 
 #[tokio::test]

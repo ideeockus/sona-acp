@@ -63,7 +63,7 @@ mod tests {
                 provider: "fake".to_owned(),
                 id: "fake-1".to_owned(),
             },
-            allow_tools: Vec::new(),
+            access: Vec::new(),
             allow_message_to: Vec::new(),
             prompt: String::new(),
         }

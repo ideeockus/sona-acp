@@ -21,10 +21,35 @@ pub struct AgentCard {
     /// One line for others: agent lists and the Run context.
     pub title: String,
     pub model: ModelRef,
-    pub allow_tools: Vec<String>,
+    /// What the agent may do, by group (D99).
+    pub access: Vec<Access>,
     pub allow_message_to: Vec<Alias>,
     /// Instructions for the agent itself.
     pub prompt: String,
+}
+
+/// A group of tools granted together (D99). The one place that says which tools a
+/// group holds: Gateway checks against it, and Runtime shows the model the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Access {
+    ReadFiles,
+    WriteFiles,
+    Shell,
+    Tasks,
+    SendMessages,
+}
+
+impl Access {
+    pub fn tools(self) -> &'static [&'static str] {
+        match self {
+            Self::ReadFiles => &["read", "ls", "grep", "find"],
+            Self::WriteFiles => &["write", "edit"],
+            Self::Shell => &["bash"],
+            Self::Tasks => &["task_create", "task_get", "task_update"],
+            Self::SendMessages => &["send_message"],
+        }
+    }
 }
 
 /// Tools every agent has, whatever its grant (D94). A prompt only says that mail
@@ -32,11 +57,11 @@ pub struct AgentCard {
 pub const ALWAYS_GRANTED: &[&str] = &["read_messages"];
 
 impl AgentCard {
-    /// The tools the agent may use: what is always granted, then its grant.
-    pub fn tools(&self) -> Vec<&str> {
+    /// The tools the agent may use: what is always granted, then its groups'.
+    pub fn tools(&self) -> Vec<&'static str> {
         let mut tools = ALWAYS_GRANTED.to_vec();
-        for tool in &self.allow_tools {
-            if !tools.contains(&tool.as_str()) {
+        for tool in self.access.iter().flat_map(|a| a.tools()) {
+            if !tools.contains(tool) {
                 tools.push(tool);
             }
         }
@@ -44,7 +69,7 @@ impl AgentCard {
     }
 
     pub fn may_use(&self, tool: &str) -> bool {
-        ALWAYS_GRANTED.contains(&tool) || self.allow_tools.iter().any(|t| t == tool)
+        ALWAYS_GRANTED.contains(&tool) || self.access.iter().any(|a| a.tools().contains(&tool))
     }
 }
 
@@ -129,7 +154,7 @@ mod tests {
     );
 
     #[test]
-    fn reading_messages_is_always_granted() {
+    fn groups_grant_their_tools_and_reading_messages_always() {
         let card = AgentCard {
             alias: "coder".parse().unwrap(),
             title: String::new(),
@@ -137,14 +162,25 @@ mod tests {
                 provider: "fake".to_owned(),
                 id: "fake-1".to_owned(),
             },
-            allow_tools: vec!["read".to_owned(), "read_messages".to_owned()],
+            access: vec![Access::ReadFiles, Access::SendMessages],
             allow_message_to: Vec::new(),
             prompt: String::new(),
         };
-        assert_eq!(card.tools(), ["read_messages", "read"]);
+        assert_eq!(
+            card.tools(),
+            [
+                "read_messages",
+                "read",
+                "ls",
+                "grep",
+                "find",
+                "send_message"
+            ]
+        );
         assert!(card.may_use("read_messages"));
-        assert!(card.may_use("read"));
+        assert!(card.may_use("grep"));
         assert!(!card.may_use("bash"));
+        assert!(!card.may_use("write"));
     }
 
     #[test]

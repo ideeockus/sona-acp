@@ -1,17 +1,20 @@
 use super::*;
-use control_plane_common::registry::ModelRef;
+use control_plane_common::registry::{Access, ModelRef};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-async fn registry() -> SqliteRegistry {
+async fn memory_pool() -> SqlitePool {
     // One connection that never closes: every connection gets its own in-memory database.
-    let pool = SqlitePoolOptions::new()
+    SqlitePoolOptions::new()
         .max_connections(1)
         .idle_timeout(None)
         .max_lifetime(None)
         .connect_with(SqliteConnectOptions::new().in_memory(true))
         .await
-        .unwrap();
-    SqliteRegistry::new(pool).await.unwrap()
+        .unwrap()
+}
+
+async fn registry() -> SqliteRegistry {
+    SqliteRegistry::new(memory_pool().await).await.unwrap()
 }
 
 fn alias(name: &str) -> Alias {
@@ -32,7 +35,7 @@ fn card(name: &str) -> AgentCard {
             provider: "anthropic".to_owned(),
             id: "model".to_owned(),
         },
-        allow_tools: vec!["read".to_owned()],
+        access: vec![Access::ReadFiles],
         allow_message_to: vec![alias("manager")],
         prompt: "You write code.".to_owned(),
     }
@@ -242,4 +245,28 @@ async fn finds_active_token_inside_text() {
 
     registry.revoke_run_token(run_id).await.unwrap();
     assert!(!registry.contains_active_run_token(&text).await.unwrap());
+}
+
+#[tokio::test]
+async fn cards_with_single_tools_move_to_groups() {
+    let pool = memory_pool().await;
+    let mut before = sqlx::migrate!();
+    before.migrations = before.migrations[..1].to_vec().into();
+    before.run(&pool).await.unwrap();
+    let old = r#"{"alias": "coder", "title": "", "model": {"provider": "p", "id": "m"},
+                  "allow_tools": ["read_messages", "read", "edit", "write", "send_message"],
+                  "allow_message_to": [], "prompt": ""}"#;
+    sqlx::query("INSERT INTO principals (alias, kind, card) VALUES ('coder', 'agent', ?)")
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let registry = SqliteRegistry::new(pool).await.unwrap();
+    let mut access = registry.agent(&alias("coder")).await.unwrap().access;
+    access.sort_by_key(|a| a.tools()[0]);
+    assert_eq!(
+        access,
+        [Access::ReadFiles, Access::SendMessages, Access::WriteFiles]
+    );
 }

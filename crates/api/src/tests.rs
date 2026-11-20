@@ -360,7 +360,7 @@ async fn component_errors_map_to_status_codes() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     let card = json!({"alias": "coder", "title": "", "model": {"provider": "p", "id": "m"},
-                      "allow_tools": [], "allow_message_to": [], "prompt": ""});
+                      "access": [], "allow_message_to": [], "prompt": ""});
     let (status, body) = call(
         &s.app,
         Method::POST,

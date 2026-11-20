@@ -5,7 +5,9 @@ use control_plane_agent_runtime::launcher::{Launched, Launcher, Process, RunSpec
 use control_plane_agent_runtime::{Limits, Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
-use control_plane_common::registry::{AgentCard, AgentDirectory, Credentials, ModelRef, Secret};
+use control_plane_common::registry::{
+    Access, AgentCard, AgentDirectory, Credentials, ModelRef, Secret,
+};
 use control_plane_common::runtime::{RunControl, RunFilter, RunOutcome, Usage};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId, Timestamp,
@@ -39,7 +41,7 @@ impl AgentDirectory for Directory {
                 provider: "fake".to_owned(),
                 id: "fake-1".to_owned(),
             },
-            allow_tools: vec!["read".to_owned(), "send_message".to_owned()],
+            access: vec![Access::ReadFiles, Access::SendMessages],
             allow_message_to,
             prompt: format!("You are {alias}."),
         })
@@ -517,7 +519,7 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
     assert_eq!(arg_after(&spec, "--model"), "fake/fake-1");
     assert_eq!(
         arg_after(&spec, "--tools"),
-        "read_messages,read,send_message"
+        "read_messages,read,ls,grep,find,send_message"
     );
     assert_eq!(arg_after(&spec, "-e"), "/agent/extension");
     assert_eq!(arg_after(&spec, "--session-dir"), "/agent/sessions");

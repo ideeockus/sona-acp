@@ -22,7 +22,7 @@ impl AgentDirectory for Directory {
                 provider: "fake".to_owned(),
                 id: "fake".to_owned(),
             },
-            allow_tools: Vec::new(),
+            access: Vec::new(),
             allow_message_to: Vec::new(),
             prompt: String::new(),
         })

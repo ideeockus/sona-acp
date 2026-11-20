@@ -103,12 +103,14 @@ Workdir живёт дольше Run. Это локальный рабочий д
   "alias": "coder",
   "title": "Реализует задачи по коду",
   "model": { "provider": "anthropic", "id": "<модель>" },
-  "allow_tools": ["read", "write", "edit", "send_message", "read_messages", "get_task", "update_task", "memory_search", "status_set"],
+  "access": ["read_files", "write_files", "tasks", "send_messages"],
   "allow_message_to": ["manager"],
   "connectors": ["gitlab"],
   "limits": { "max_turns_per_run": 50, "max_tokens_per_run": 200000, "max_wakes_per_hour": 20 }
 }
 ```
+
+`access` — группы инструментов (D99): `read_files` (`read`, `ls`, `grep`, `find`), `write_files` (`write`, `edit`), `shell` (`bash`), `tasks` (`task_*`), `send_messages` (`send_message`). `read_messages` есть у всех (D94).
 
 Карточка — декларация. Права проверяются при каждом обращении. Числа лимитов в примере условные (O32). Совместимость с A2A не нужна.
 
