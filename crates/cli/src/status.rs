@@ -1,9 +1,10 @@
 //! `sapctl status` for a human: agents, their Runs and failing sessions (D77).
 
 use control_plane_common::Timestamp;
-use control_plane_common::status::AgentStatus;
+use control_plane_common::status::Status;
 
-pub fn render(agents: &[AgentStatus], now: Timestamp) -> String {
+pub fn render(status: &Status, now: Timestamp) -> String {
+    let agents = &status.agents;
     // Bare aliases, as the commands take them.
     let mut rows = vec![row(["AGENT", "STATE", "RUN", "SESSION", "SINCE", "UNREAD"])];
     for agent in agents {
@@ -51,6 +52,13 @@ pub fn render(agents: &[AgentStatus], now: Timestamp) -> String {
             out.push_str(&format!("\nsapctl retry {target}\nsapctl skip  {target}\n"));
         }
     }
+
+    if !status.stopped_chains.is_empty() {
+        out.push_str("\nSTOPPED CHAIN\n");
+        for chain in &status.stopped_chains {
+            out.push_str(&format!("{chain}  sapctl resume {chain}\n"));
+        }
+    }
     out
 }
 
@@ -93,6 +101,7 @@ mod tests {
     use super::*;
     use control_plane_common::broker::FailingSession;
     use control_plane_common::runtime::ActiveRun;
+    use control_plane_common::status::AgentStatus;
     use control_plane_common::{CorrelationId, RunId, SessionKey};
 
     fn at(millis: i64) -> Timestamp {
@@ -111,6 +120,7 @@ mod tests {
                     agent: "coder".parse().unwrap(),
                     run_id,
                     session,
+                    correlation_id: CorrelationId::new(),
                     started_at: at(0),
                 }),
                 unread: 1,
@@ -129,13 +139,19 @@ mod tests {
                 }],
             },
         ];
-        let out = render(&agents, at(150_000));
+        let stopped = CorrelationId::new();
+        let status = Status {
+            agents,
+            stopped_chains: vec![stopped],
+        };
+        let out = render(&status, at(150_000));
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines[0].starts_with("AGENT    STATE    RUN"));
         assert!(lines[1].starts_with(&format!("coder    running  {run_id}  {session}  2m")));
         assert!(lines[2].starts_with("manager  idle"));
         assert!(out.contains("3         stuck  Pi exited"));
         assert!(out.contains(&format!("sapctl retry manager {session}")));
+        assert!(out.contains(&format!("{stopped}  sapctl resume {stopped}")));
     }
 
     #[test]

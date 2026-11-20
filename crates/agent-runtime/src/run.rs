@@ -14,11 +14,20 @@ use control_plane_common::{
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Notify;
 
 type Commands = CommandWriter<Box<dyn AsyncWrite + Send + Unpin>>;
 type Events = EventReader<Box<dyn AsyncRead + Send + Unpin>>;
+
+/// How Pi stopped talking.
+enum Ended {
+    /// It settled; the newest message it was told about.
+    Settled(MessageId),
+    /// The operator stopped the chain and Pi was aborted (D27).
+    Stopped,
+}
 
 /// What one Run is about.
 struct Run {
@@ -43,7 +52,7 @@ impl Run {
 
 impl Inner {
     /// Runs Pi for one batch. On success the session's cursor moves past everything
-    /// the Run was told about (D49); on failure the messages stay unread.
+    /// the Run was told about (D49); on failure or a stop the messages stay unread.
     pub(crate) async fn run(&self, agent: &Alias, batch: InboxBatch, wake: &Notify) -> Result<()> {
         let run_id = RunId::new();
         // The Run continues the chain of the message that triggered it (D41).
@@ -65,35 +74,38 @@ impl Inner {
             dir: self.config.data_dir.join("runs").join(run_id.to_string()),
         };
 
-        self.record(&run, "run_started", None, None).await?;
-        let token = self
-            .credentials
-            .issue_run_token(agent, run_id, correlation_id)
-            .await?;
-
+        // Visible to `abort_chain` before checking the chain: the operator stops it in
+        // Broker first, so either this check or the abort catches the Run (D27).
+        let stop = Arc::new(Notify::new());
         let active = ActiveRun {
             agent: agent.clone(),
             run_id,
             session: run.batch.session,
+            correlation_id,
             started_at: Timestamp::now(),
         };
-        self.active().insert(agent.clone(), active);
-        let outcome = self.drive(&run, &token, wake).await;
+        self.active().insert(agent.clone(), (active, stop.clone()));
+        let outcome = match self.inbox.is_stopped(correlation_id).await {
+            Ok(false) => self.issue_and_drive(&run, wake, &stop).await.map(Some),
+            Ok(true) => Ok(None),
+            Err(error) => Err(error),
+        };
         self.active().remove(agent);
 
-        // Whatever happened, the token dies with the Run (D24).
-        let revoked = self.credentials.revoke_run_token(run_id).await;
-        // Nothing secret is left there once the token is revoked, so a failed removal is harmless.
-        let _ = tokio::fs::remove_dir_all(&run.dir).await;
-
-        match outcome.and_then(|last| revoked.map(|()| last)) {
-            Ok(last) => {
+        match outcome {
+            Ok(Some(Ended::Settled(last))) => {
                 self.inbox
                     .advance_cursor(agent, run.batch.session, last)
                     .await?;
                 self.record(&run, "run_finished", Some(Outcome::Ok), None)
                     .await
             }
+            Ok(Some(Ended::Stopped)) => {
+                let reason = Some("the chain was stopped".to_owned());
+                self.record(&run, "run_finished", None, reason).await
+            }
+            // The chain was stopped before the Run began: nothing happened.
+            Ok(None) => Ok(()),
             Err(error) => {
                 let reason = Some(error.to_string());
                 self.record(&run, "run_finished", Some(Outcome::Error), reason)
@@ -103,8 +115,31 @@ impl Inner {
         }
     }
 
-    /// Starts Pi and talks to it. Returns the newest message the Run was told about.
-    async fn drive(&self, run: &Run, token: &Secret, wake: &Notify) -> Result<MessageId> {
+    /// Records the start, issues the token and runs Pi; the token dies with the Run.
+    async fn issue_and_drive(&self, run: &Run, wake: &Notify, stop: &Notify) -> Result<Ended> {
+        let agent = run.caller.alias();
+        self.record(run, "run_started", None, None).await?;
+        let token = self
+            .credentials
+            .issue_run_token(agent, run.run_id, run.correlation_id)
+            .await?;
+        let outcome = self.drive(run, &token, wake, stop).await;
+
+        // Whatever happened, the token dies with the Run (D24).
+        let revoked = self.credentials.revoke_run_token(run.run_id).await;
+        // Nothing secret is left there once the token is revoked, so a failed removal is harmless.
+        let _ = tokio::fs::remove_dir_all(&run.dir).await;
+        outcome.and_then(|ended| revoked.map(|()| ended))
+    }
+
+    /// Starts Pi and talks to it.
+    async fn drive(
+        &self,
+        run: &Run,
+        token: &Secret,
+        wake: &Notify,
+        stop: &Notify,
+    ) -> Result<Ended> {
         let agent_dir = self
             .config
             .data_dir
@@ -150,29 +185,32 @@ impl Inner {
         let mut events = EventReader::new(launched.stdout);
         let mut process = launched.process;
 
-        let talked = self.converse(run, &mut commands, &mut events, wake).await;
+        let talked = self
+            .converse(run, &mut commands, &mut events, wake, stop)
+            .await;
         // Closing stdin lets a settled Pi exit; a broken one is killed.
         let _ = commands.close().await;
         if talked.is_err() {
             let _ = process.kill().await;
         }
         let exit = process.wait().await?;
-        let last = talked?;
+        let ended = talked?;
         if exit != Some(0) {
             return Err(Error::Internal(format!("Pi exited with {exit:?}")));
         }
-        Ok(last)
+        Ok(ended)
     }
 
     /// Prompts Pi and follows it until `agent_settled`, steering in new messages
-    /// of the same session as they arrive (D12).
+    /// of the same session as they arrive (D12) and aborting it on a stop (D27).
     async fn converse(
         &self,
         run: &Run,
         commands: &mut Commands,
         events: &mut Events,
         wake: &Notify,
-    ) -> Result<MessageId> {
+        stop: &Notify,
+    ) -> Result<Ended> {
         let messages = &run.batch.messages;
         commands
             .send(&Command::Prompt {
@@ -184,6 +222,10 @@ impl Inner {
         // How the model's latest answer ended. Pi retries the provider itself and settles
         // normally when it gives up, so this is how a failed model reaches us (D77).
         let mut model_error = None;
+        let mut stopping = false;
+        // An abort before Pi starts working is a no-op, and the prompt would run anyway:
+        // a stop that early is sent once Pi starts (D27).
+        let mut working = false;
 
         loop {
             tokio::select! {
@@ -191,10 +233,17 @@ impl Inner {
                     Some(Event::MessageEnd { message }) if message.role == "assistant" => {
                         model_error = message.model_error();
                     }
+                    Some(Event::AgentStart) => {
+                        working = true;
+                        if stopping {
+                            commands.send(&Command::Abort).await?;
+                        }
+                    }
+                    Some(Event::AgentSettled) if stopping => return Ok(Ended::Stopped),
                     Some(Event::AgentSettled) => {
                         return match model_error {
                             Some(error) => Err(Error::Internal(format!("the model failed: {error}"))),
-                            None => Ok(last),
+                            None => Ok(Ended::Settled(last)),
                         };
                     }
                     Some(Event::ToolExecutionEnd { tool_name, is_error, .. }) => {
@@ -208,7 +257,13 @@ impl Inner {
                     Some(_) => {}
                     None => return Err(Error::Internal("Pi exited before settling".to_owned())),
                 },
-                () = wake.notified() => {
+                () = stop.notified(), if !stopping => {
+                    stopping = true;
+                    if working {
+                        commands.send(&Command::Abort).await?;
+                    }
+                }
+                () = wake.notified(), if !stopping => {
                     let fresh: Vec<Message> = self
                         .inbox
                         .unread_in(run.caller.alias(), run.batch.session)

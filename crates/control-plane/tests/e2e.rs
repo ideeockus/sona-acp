@@ -50,33 +50,11 @@ fn script() -> Vec<Step> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs Docker and the sona-plane-agent:dev image"]
 async fn an_agent_answers_the_operator_past_gateway() {
-    let site = Site::from_env();
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("e2e");
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-
     let model = Arc::new(Model::default());
-    let model_port = model.clone().serve(site.listen).await;
-    let control_plane = ControlPlane::start(&site, &root, model_port).await;
+    let (root, control_plane) = start("e2e-answer", model.clone()).await;
     let operator = &control_plane.operator;
-
-    let card = json!({
-        "alias": "coder",
-        "title": "Writes code",
-        "model": { "provider": "fake", "id": "fake-1" },
-        "allow_tools": ["write", "read", "send_message"],
-        "allow_message_to": ["user"],
-        "prompt": "You are @coder.",
-    });
-    operator.call("POST", "/v1/agents", Some(card)).await;
-    let sent = operator
-        .call(
-            "POST",
-            "/v1/messages",
-            Some(json!({ "to": "coder", "body": "start", "subject": null,
-                         "task_id": null, "in_reply_to": null })),
-        )
-        .await;
+    add_coder(operator).await;
+    let sent = send(operator, "start", None).await;
     let chain = sent["correlation_id"].as_str().unwrap().to_owned();
 
     // The agent answers in the operator's chain.
@@ -138,8 +116,9 @@ async fn an_agent_answers_the_operator_past_gateway() {
     let status = operator.call("GET", "/v1/status", None).await;
     assert_eq!(
         status,
-        json!([{ "alias": "coder", "title": "Writes code", "run": null,
-                 "unread": 0, "failing": [] }])
+        json!({ "agents": [{ "alias": "coder", "title": "Writes code", "run": null,
+                             "unread": 0, "failing": [] }],
+                "stopped_chains": [] })
     );
 
     // The model saw why the read was refused.
@@ -150,6 +129,118 @@ async fn an_agent_answers_the_operator_past_gateway() {
     drop(requests);
     drop(control_plane);
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the sona-plane-agent:dev image"]
+async fn a_stopped_chain_wakes_nobody_until_resumed() {
+    // The model never answers, so the Run stays busy until it is aborted.
+    let model = Arc::new(Model {
+        hang: true,
+        ..Model::default()
+    });
+    let (root, control_plane) = start("e2e-stop", model).await;
+    let operator = &control_plane.operator;
+    add_coder(operator).await;
+    let sent = send(operator, "start", None).await;
+    let chain = text(&sent["correlation_id"]);
+    let count = |action: &'static str| {
+        let chain = chain.clone();
+        async move {
+            let journal = operator
+                .call("GET", &format!("/v1/journal?chain={chain}"), None)
+                .await;
+            journal
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["action"] == action)
+                .count()
+        }
+    };
+    eventually("the busy Run", || async {
+        let status = operator.call("GET", "/v1/status", None).await;
+        (!status["agents"][0]["run"].is_null()).then_some(())
+    })
+    .await;
+
+    operator
+        .call("POST", &format!("/v1/chains/{chain}/stop"), None)
+        .await;
+    eventually("the aborted Run", || async {
+        (count("run_finished").await == 1).then_some(())
+    })
+    .await;
+    let journal = operator
+        .call("GET", &format!("/v1/journal?chain={chain}"), None)
+        .await;
+    let finished = journal
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "run_finished")
+        .unwrap();
+    assert_eq!(finished["reason"], "the chain was stopped");
+
+    // The operator's answer is kept and the operator is told, but nobody wakes.
+    let answer = send(operator, "more", Some(text(&sent["id"]))).await;
+    assert_eq!(answer["chain_stopped"], true);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(count("run_started").await, 1);
+    let status = operator.call("GET", "/v1/status", None).await;
+    assert_eq!(status["stopped_chains"], json!([chain]));
+    assert_eq!(status["agents"][0]["run"], Value::Null);
+    assert_eq!(status["agents"][0]["failing"], json!([]));
+
+    // Resumed, the chain is delivered again, the answer with it.
+    operator
+        .call("POST", &format!("/v1/chains/{chain}/resume"), None)
+        .await;
+    eventually("the resumed Run", || async {
+        (count("run_started").await == 2).then_some(())
+    })
+    .await;
+
+    // Leave nothing running.
+    operator
+        .call("POST", &format!("/v1/chains/{chain}/stop"), None)
+        .await;
+    eventually("the second abort", || async {
+        (count("run_finished").await == 2).then_some(())
+    })
+    .await;
+    drop(control_plane);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// A fresh control plane in its own directory, with the stub model.
+async fn start(name: &str, model: Arc<Model>) -> (PathBuf, ControlPlane) {
+    let site = Site::from_env();
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let model_port = model.serve(site.listen).await;
+    let control_plane = ControlPlane::start(&site, &root, model_port).await;
+    (root, control_plane)
+}
+
+async fn add_coder(operator: &Operator) {
+    let card = json!({
+        "alias": "coder",
+        "title": "Writes code",
+        "model": { "provider": "fake", "id": "fake-1" },
+        "allow_tools": ["write", "read", "send_message"],
+        "allow_message_to": ["user"],
+        "prompt": "You are @coder.",
+    });
+    operator.call("POST", "/v1/agents", Some(card)).await;
+}
+
+/// The operator writes to `@coder`, in a new chain or in reply to a message.
+async fn send(operator: &Operator, body: &str, in_reply_to: Option<String>) -> Value {
+    let message = json!({ "to": "coder", "body": body, "subject": null,
+                          "task_id": null, "in_reply_to": in_reply_to });
+    operator.call("POST", "/v1/messages", Some(message)).await
 }
 
 /// Where things listen and how containers reach them.
@@ -175,6 +266,8 @@ impl Site {
 #[derive(Default)]
 struct Model {
     requests: Mutex<Vec<Value>>,
+    /// Never answers.
+    hang: bool,
 }
 
 impl Model {
@@ -200,6 +293,9 @@ async fn complete(
         .filter(|m| m["role"] == "tool")
         .count();
     model.requests.lock().unwrap().push(request);
+    if model.hang {
+        std::future::pending::<()>().await;
+    }
 
     let script = script();
     let (delta, finish) = match &script[results.min(script.len() - 1)] {

@@ -75,7 +75,8 @@ pub trait MessageBroker: Send + Sync {
     /// it is inherited through `in_reply_to`, otherwise a new chain starts (D41).
     async fn send(&self, caller: &Caller, message: NewMessage) -> Result<Message>;
 
-    /// Unread messages of `caller` for one session, oldest first.
+    /// Unread messages of `caller` for one session, oldest first. An agent does not
+    /// see messages of stopped chains (D27); the operator sees everything.
     ///
     /// The cursor does not move: only a finished Run moves it (D49).
     async fn read_messages(&self, caller: &Caller, session: SessionKey) -> Result<Vec<Message>>;
@@ -99,11 +100,12 @@ pub trait InboxDelivery: Send + Sync {
     async fn agents_with_unread(&self) -> Result<Vec<Alias>>;
 
     /// All unread messages of the session holding the agent's oldest unread message.
-    /// Stuck sessions are left out (D77).
+    /// Stuck sessions (D77) and messages of stopped chains (D27) are left out.
     // Deliberately simple for one active Run per agent; revisit with parallel Runs (D57).
     async fn next_batch(&self, agent: &Alias) -> Result<Option<InboxBatch>>;
 
-    /// Unread messages of one session, oldest first. What an active Run may get by `steer`.
+    /// Unread messages of one session, oldest first, without those of stopped chains.
+    /// What an active Run may get by `steer`.
     async fn unread_in(&self, agent: &Alias, session: SessionKey) -> Result<Vec<Message>>;
 
     /// Marks a session's messages up to and including `up_to` as read (D49), and
@@ -122,6 +124,9 @@ pub trait InboxDelivery: Send + Sync {
 
     /// Stops delivering the session until the operator retries or skips it (D77).
     async fn mark_stuck(&self, agent: &Alias, session: SessionKey) -> Result<()>;
+
+    /// Whether the operator stopped the chain (D27).
+    async fn is_stopped(&self, chain: CorrelationId) -> Result<bool>;
 }
 
 /// What the operator calls to see and unblock delivery (D77). Exposed through the API.
@@ -135,6 +140,15 @@ pub trait DeliveryControl: Send + Sync {
 
     /// Marks the session's unread messages as read without delivering them.
     async fn skip(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()>;
+
+    /// Stops delivering the chain's messages: they are kept, but wake nobody, and its
+    /// agents may not write into it any more (D27). Stopping twice is fine.
+    async fn stop_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()>;
+
+    /// Delivers the chain again, including what arrived while it was stopped.
+    async fn resume_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()>;
+
+    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<CorrelationId>>;
 }
 
 #[cfg(test)]

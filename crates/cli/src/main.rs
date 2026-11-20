@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use client::Client;
 use control_plane_common::broker::NewMessage;
 use control_plane_common::registry::AgentCard;
-use control_plane_common::status::AgentStatus;
+use control_plane_common::status::Status;
 use control_plane_common::tasks::{NewTask, TaskResult, TaskStatus, TaskUpdate};
 use control_plane_common::{Alias, CorrelationId, MessageId, RunId, SessionKey, TaskId, Timestamp};
 use reqwest::Method;
@@ -63,6 +63,10 @@ enum Command {
     Retry { agent: Alias, session: SessionKey },
     /// Marks a session's unread messages read without delivering them (D77).
     Skip { agent: Alias, session: SessionKey },
+    /// Aborts the chain's Runs; its messages are kept but wake nobody (D27).
+    Stop { chain: CorrelationId },
+    /// Delivers a stopped chain again, with what arrived meanwhile (D27).
+    Resume { chain: CorrelationId },
 }
 
 #[derive(Subcommand)]
@@ -144,11 +148,19 @@ async fn run(cli: Cli) -> Result<String, String> {
         .await?;
     Ok(match reply {
         Some(reply) if tables => {
-            let agents: Vec<AgentStatus> =
+            let status: Status =
                 serde_json::from_value(reply).map_err(|e| format!("invalid reply: {e}"))?;
-            status::render(&agents, Timestamp::now())
+            status::render(&status, Timestamp::now())
         }
-        Some(reply) => format!("{reply:#}\n"),
+        Some(reply) => {
+            if reply["chain_stopped"] == true {
+                let chain = reply["correlation_id"].as_str().unwrap_or_default();
+                eprintln!(
+                    "sapctl: chain {chain} is stopped; the message waits for `sapctl resume {chain}`"
+                );
+            }
+            format!("{reply:#}\n")
+        }
         None => String::new(),
     })
 }
@@ -240,6 +252,8 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
             format!("/v1/agents/{}/sessions/{session}/skip", agent.as_str()),
             None,
         ),
+        Command::Stop { chain } => (Method::POST, format!("/v1/chains/{chain}/stop"), None),
+        Command::Resume { chain } => (Method::POST, format!("/v1/chains/{chain}/resume"), None),
     })
 }
 
@@ -329,6 +343,19 @@ mod tests {
         let (_, path, _) = request_of(&["skip", "coder", &session]);
         assert!(path.ends_with("/skip"));
         assert!(parse(&["retry", "coder", "inbox"]).is_err());
+    }
+
+    #[test]
+    fn stop_and_resume_name_a_chain() {
+        let chain = CorrelationId::new();
+        let (method, path, _) = request_of(&["stop", &chain.to_string()]);
+        assert_eq!(
+            (method, path),
+            (Method::POST, format!("/v1/chains/{chain}/stop"))
+        );
+        let (_, path, _) = request_of(&["resume", &chain.to_string()]);
+        assert_eq!(path, format!("/v1/chains/{chain}/resume"));
+        assert!(parse(&["stop", "chain-1"]).is_err());
     }
 
     #[test]

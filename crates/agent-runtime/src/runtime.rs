@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use control_plane_common::broker::{InboxDelivery, Notifications};
 use control_plane_common::journal::{Component, Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentDirectory, Credentials};
-use control_plane_common::runtime::{ActiveRun, RunStatus};
-use control_plane_common::{Alias, Caller, Error, Result, SessionKey};
+use control_plane_common::runtime::{ActiveRun, RunControl};
+use control_plane_common::{Alias, Caller, CorrelationId, Error, Result, SessionKey};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -44,8 +44,8 @@ pub(crate) struct Inner {
     pub(crate) launcher: Arc<dyn Launcher>,
     /// Agents being served, each with the signal that new mail arrived.
     serving: Mutex<HashMap<Alias, Arc<Notify>>>,
-    /// Runs in progress, by agent.
-    pub(crate) active: Mutex<HashMap<Alias, ActiveRun>>,
+    /// Runs in progress by agent, each with the signal to abort it (D27).
+    active: Mutex<HashMap<Alias, (ActiveRun, Arc<Notify>)>>,
 }
 
 impl Runtime {
@@ -185,22 +185,42 @@ impl Inner {
         self.serving.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(crate) fn active(&self) -> MutexGuard<'_, HashMap<Alias, ActiveRun>> {
+    pub(crate) fn active(&self) -> MutexGuard<'_, HashMap<Alias, (ActiveRun, Arc<Notify>)>> {
         self.active.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 #[async_trait]
-impl RunStatus for Runtime {
+impl RunControl for Runtime {
     async fn active_runs(&self, caller: &Caller) -> Result<Vec<ActiveRun>> {
-        if !matches!(caller, Caller::Operator { .. }) {
-            return Err(Error::Forbidden(format!(
-                "{} is not the operator",
-                caller.alias()
-            )));
-        }
-        let mut runs: Vec<ActiveRun> = self.inner.active().values().cloned().collect();
+        require_operator(caller)?;
+        let mut runs: Vec<ActiveRun> = self
+            .inner
+            .active()
+            .values()
+            .map(|(run, _)| run.clone())
+            .collect();
         runs.sort_by(|a, b| a.agent.as_str().cmp(b.agent.as_str()));
         Ok(runs)
+    }
+
+    async fn abort_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()> {
+        require_operator(caller)?;
+        for (run, stop) in self.inner.active().values() {
+            if run.correlation_id == chain {
+                stop.notify_one();
+            }
+        }
+        Ok(())
+    }
+}
+
+fn require_operator(caller: &Caller) -> Result<()> {
+    match caller {
+        Caller::Operator { .. } => Ok(()),
+        other => Err(Error::Forbidden(format!(
+            "{} is not the operator",
+            other.alias()
+        ))),
     }
 }

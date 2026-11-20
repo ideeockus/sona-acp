@@ -41,6 +41,9 @@ pub enum Event {
         tool_name: String,
         is_error: bool,
     },
+    /// Pi started working on the prompt. It may start again within one Run: after
+    /// a provider retry or a steer.
+    AgentStart,
     /// A message is complete; for the model's answers it tells how they ended.
     MessageEnd { message: EndedMessage },
     /// Pi will not continue on its own: the Run's work is done.

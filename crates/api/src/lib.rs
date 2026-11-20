@@ -13,12 +13,12 @@ use control_plane_common::broker::{DeliveryControl, Message, MessageBroker, NewM
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
 use control_plane_common::registry::{AgentCard, AgentRegistry, Credentials};
-use control_plane_common::runtime::RunStatus;
-use control_plane_common::status::AgentStatus;
+use control_plane_common::runtime::RunControl;
+use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskUpdate, TaskView};
-use control_plane_common::{Alias, CorrelationId, Error, RunId, SessionKey, TaskId};
+use control_plane_common::{Alias, Caller, CorrelationId, Error, RunId, SessionKey, TaskId};
 use extract::{ApiError, Authenticated, Body};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// The components the API exposes, each through its external trait.
@@ -27,7 +27,7 @@ pub struct Services {
     pub registry: Arc<dyn AgentRegistry>,
     pub broker: Arc<dyn MessageBroker>,
     pub delivery: Arc<dyn DeliveryControl>,
-    pub runs: Arc<dyn RunStatus>,
+    pub runs: Arc<dyn RunControl>,
     pub tasks: Arc<dyn TaskManager>,
     pub gateway: Arc<dyn ToolGateway>,
     pub journal: Arc<dyn JournalReader>,
@@ -47,18 +47,40 @@ pub fn router(services: Services) -> Router {
         .route("/v1/agents/{alias}", get(get_agent))
         .route("/v1/agents/{alias}/sessions/{session}/retry", post(retry))
         .route("/v1/agents/{alias}/sessions/{session}/skip", post(skip))
+        .route("/v1/chains/{id}/stop", post(stop_chain))
+        .route("/v1/chains/{id}/resume", post(resume_chain))
         .route("/v1/status", get(status))
         .route("/v1/journal", get(read_journal))
         .with_state(Arc::new(services))
+}
+
+/// A sent message, and whether it waits for its chain to be resumed (D27).
+#[derive(Serialize)]
+struct Sent {
+    #[serde(flatten)]
+    message: Message,
+    chain_stopped: bool,
 }
 
 async fn send_message(
     State(s): Shared,
     Authenticated(caller): Authenticated,
     Body(message): Body<NewMessage>,
-) -> Result<(StatusCode, Json<Message>), ApiError> {
-    let sent = s.broker.send(&caller, message).await?;
-    Ok((StatusCode::CREATED, Json(sent)))
+) -> Result<(StatusCode, Json<Sent>), ApiError> {
+    let message = s.broker.send(&caller, message).await?;
+    // Only the operator can write into a stopped chain; agents are refused.
+    let chain_stopped = matches!(caller, Caller::Operator { .. })
+        && s.delivery
+            .stopped_chains(&caller)
+            .await?
+            .contains(&message.correlation_id);
+    Ok((
+        StatusCode::CREATED,
+        Json(Sent {
+            message,
+            chain_stopped,
+        }),
+    ))
 }
 
 async fn read_messages(
@@ -151,12 +173,38 @@ async fn skip(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Every agent with its Run, unread mail and failing sessions (D77).
-async fn status(State(s): Shared, Authenticated(caller): Authenticated) -> Reply<Vec<AgentStatus>> {
+/// Stops the chain in Broker first, so that nothing starts it again, then aborts its
+/// active Runs (D27).
+async fn stop_chain(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let chain: CorrelationId = parse(&id)?;
+    s.delivery.stop_chain(&caller, chain).await?;
+    s.runs.abort_chain(&caller, chain).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn resume_chain(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    s.delivery.resume_chain(&caller, parse(&id)?).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Every agent with its Run, unread mail and failing sessions (D77), and the
+/// stopped chains (D27).
+async fn status(State(s): Shared, Authenticated(caller): Authenticated) -> Reply<Status> {
     let cards = s.registry.list_agents(&caller).await?;
     let inboxes = s.delivery.inbox_status(&caller).await?;
     let runs = s.runs.active_runs(&caller).await?;
-    Ok(Json(AgentStatus::of(cards, inboxes, runs)))
+    Ok(Json(Status {
+        agents: AgentStatus::of(cards, inboxes, runs),
+        stopped_chains: s.delivery.stopped_chains(&caller).await?,
+    }))
 }
 
 /// Exactly one of `chain`, `run` and `task`.

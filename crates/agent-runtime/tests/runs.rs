@@ -6,7 +6,7 @@ use control_plane_agent_runtime::{Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentCard, AgentDirectory, Credentials, ModelRef, Secret};
-use control_plane_common::runtime::RunStatus;
+use control_plane_common::runtime::RunControl;
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId, Timestamp,
 };
@@ -85,6 +85,7 @@ struct Inbox {
     read: Mutex<HashSet<MessageId>>,
     failures: Mutex<HashMap<SessionKey, u32>>,
     stuck: Mutex<HashSet<SessionKey>>,
+    stopped: Mutex<HashSet<CorrelationId>>,
     notifications: broadcast::Sender<Alias>,
 }
 
@@ -95,6 +96,7 @@ impl Default for Inbox {
             read: Mutex::default(),
             failures: Mutex::default(),
             stuck: Mutex::default(),
+            stopped: Mutex::default(),
             notifications: broadcast::channel(16).0,
         }
     }
@@ -143,7 +145,8 @@ impl InboxDelivery for Inbox {
     async fn next_batch(&self, agent: &Alias) -> Result<Option<InboxBatch>> {
         let mut unread = self.unread(agent);
         let stuck = self.stuck.lock().unwrap().clone();
-        unread.retain(|m| !stuck.contains(&m.session()));
+        let stopped = self.stopped.lock().unwrap().clone();
+        unread.retain(|m| !stuck.contains(&m.session()) && !stopped.contains(&m.correlation_id));
         let Some(session) = unread.first().map(Message::session) else {
             return Ok(None);
         };
@@ -192,6 +195,10 @@ impl InboxDelivery for Inbox {
         self.stuck.lock().unwrap().insert(session);
         Ok(())
     }
+
+    async fn is_stopped(&self, chain: CorrelationId) -> Result<bool> {
+        Ok(self.stopped.lock().unwrap().contains(&chain))
+    }
 }
 
 // ---- Journal ----
@@ -230,6 +237,10 @@ enum Script {
     Crash,
     /// Settles normally after the model provider failed.
     ModelError,
+    /// Uses one tool and settles only when aborted.
+    UntilAbort,
+    /// Starts working once released, then settles only when aborted.
+    StartWhen(Arc<Notify>),
 }
 
 #[derive(Default)]
@@ -270,11 +281,16 @@ impl Launcher for FakePi {
 
         tokio::spawn(async move {
             let (first_line, first) = oneshot::channel();
+            let aborted = Arc::new(Notify::new());
+            let abort = aborted.clone();
             // Reads commands until Runtime closes stdin.
             let reader = tokio::spawn(async move {
                 let mut lines = BufReader::new(pi_stdin).lines();
                 let mut first_line = Some(first_line);
                 while let Ok(Some(line)) = lines.next_line().await {
+                    if line.contains(r#""type":"abort""#) {
+                        abort.notify_one();
+                    }
                     received.lock().unwrap().push(line);
                     if let Some(signal) = first_line.take() {
                         let _ = signal.send(());
@@ -288,11 +304,21 @@ impl Launcher for FakePi {
                 let _ = exit.send(1);
                 return;
             }
+            if let Script::StartWhen(release) = &script {
+                release.notified().await;
+            }
+            pi_stdout
+                .write_all(b"{\"type\":\"agent_start\"}\n")
+                .await
+                .unwrap();
             let tool = br#"{"type":"tool_execution_end","toolCallId":"c1","toolName":"read","result":{},"isError":false}"#;
             pi_stdout.write_all(tool).await.unwrap();
             pi_stdout.write_all(b"\n").await.unwrap();
             if let Script::SettleWhen(release) = &script {
                 release.notified().await;
+            }
+            if let Script::UntilAbort | Script::StartWhen(_) = script {
+                aborted.notified().await;
             }
             if let Script::ModelError = script {
                 let failed = br#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"503 from provider"}}"#;
@@ -630,6 +656,122 @@ async fn the_operator_sees_active_runs() {
     release.notify_one();
     eventually("message read", || s.inbox.is_read(&first)).await;
     assert!(s.runtime.active_runs(&operator).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stopping_a_chain_aborts_its_run_without_a_failure() {
+    let s = setup(vec![Script::UntilAbort]);
+    let first = message("coder", None, CorrelationId::new());
+    s.inbox.add(first.clone());
+    let operator = Caller::Operator {
+        alias: alias_of("user"),
+    };
+
+    s.runtime.start().await.unwrap();
+    eventually("run started", || s.pi.specs.lock().unwrap().len() == 1).await;
+    // Broker first, then Runtime, as the API does.
+    s.inbox.stopped.lock().unwrap().insert(first.correlation_id);
+    s.runtime
+        .abort_chain(&operator, first.correlation_id)
+        .await
+        .unwrap();
+    eventually("run finished", || {
+        s.journal.actions().iter().any(|(a, _)| a == "run_finished")
+    })
+    .await;
+
+    {
+        let events = s.journal.0.lock().unwrap();
+        let finished = events.iter().find(|e| e.action == "run_finished").unwrap();
+        assert_eq!(finished.result, None);
+        assert_eq!(finished.reason.as_deref(), Some("the chain was stopped"));
+    }
+    assert!(
+        s.pi.received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("abort"))
+    );
+    assert!(!s.inbox.is_read(&first));
+    assert!(s.inbox.failures.lock().unwrap().is_empty());
+    assert_eq!(
+        *s.tokens.issued.lock().unwrap(),
+        *s.tokens.revoked.lock().unwrap()
+    );
+    // Not retried: the stopped chain's message is not delivered.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(s.pi.specs.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_stop_before_pi_starts_working_aborts_once_it_does() {
+    let start = Arc::new(Notify::new());
+    let s = setup(vec![Script::StartWhen(start.clone())]);
+    let first = message("coder", None, CorrelationId::new());
+    s.inbox.add(first.clone());
+    let operator = Caller::Operator {
+        alias: alias_of("user"),
+    };
+
+    s.runtime.start().await.unwrap();
+    eventually("prompt sent", || !s.pi.received.lock().unwrap().is_empty()).await;
+    s.inbox.stopped.lock().unwrap().insert(first.correlation_id);
+    s.runtime
+        .abort_chain(&operator, first.correlation_id)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // An abort now would be lost, so none is sent yet.
+    assert!(
+        !s.pi
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("abort"))
+    );
+
+    start.notify_one();
+    eventually("run finished", || {
+        s.journal.actions().iter().any(|(a, _)| a == "run_finished")
+    })
+    .await;
+    assert!(
+        s.pi.received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("abort"))
+    );
+}
+
+#[tokio::test]
+async fn aborting_another_chain_leaves_the_run_alone() {
+    let release = Arc::new(Notify::new());
+    let s = setup(vec![Script::SettleWhen(release.clone())]);
+    let first = message("coder", None, CorrelationId::new());
+    s.inbox.add(first.clone());
+    let operator = Caller::Operator {
+        alias: alias_of("user"),
+    };
+
+    s.runtime.start().await.unwrap();
+    eventually("run started", || s.pi.specs.lock().unwrap().len() == 1).await;
+    s.runtime
+        .abort_chain(&operator, CorrelationId::new())
+        .await
+        .unwrap();
+    release.notify_one();
+    eventually("message read", || s.inbox.is_read(&first)).await;
+    assert!(
+        !s.pi
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("abort"))
+    );
 }
 
 #[tokio::test]

@@ -103,6 +103,22 @@ impl SqliteBroker {
         parse(&found)
     }
 
+    /// Unread messages of a recipient that may be delivered: none of stopped chains (D27).
+    async fn deliverable(&self, recipient: &Alias) -> Result<Vec<Message>> {
+        let stopped = self.stopped().await?;
+        let mut unread = self.unread(recipient).await?;
+        unread.retain(|m| !stopped.contains(&m.correlation_id));
+        Ok(unread)
+    }
+
+    async fn stopped(&self) -> Result<HashSet<CorrelationId>> {
+        let chains: Vec<String> = sqlx::query_scalar("SELECT correlation_id FROM stopped_chains")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+        chains.iter().map(|c| parse(c)).collect()
+    }
+
     /// Unread messages of a recipient, oldest first.
     async fn unread(&self, recipient: &Alias) -> Result<Vec<Message>> {
         let rows: Vec<Row> = sqlx::query_as(
@@ -129,6 +145,16 @@ impl MessageBroker for SqliteBroker {
                 self.deny(caller, message.task_id, reason).await?;
             }
             return Err(error);
+        }
+
+        // A stopped chain takes nothing more from its agents (D27). The operator may still
+        // write: the message waits for `resume`.
+        if let Caller::Agent { correlation_id, .. } = caller
+            && self.is_stopped(*correlation_id).await?
+        {
+            let reason = "the chain is stopped";
+            self.deny(caller, message.task_id, reason).await?;
+            return Err(Error::Forbidden(reason.to_owned()));
         }
 
         // A Run token must not leave its agent (D24).
@@ -184,7 +210,12 @@ impl MessageBroker for SqliteBroker {
     }
 
     async fn read_messages(&self, caller: &Caller, session: SessionKey) -> Result<Vec<Message>> {
-        self.unread_in(caller.alias(), session).await
+        let mut unread = match caller {
+            Caller::Operator { alias } => self.unread(alias).await?,
+            _ => self.deliverable(caller.alias()).await?,
+        };
+        unread.retain(|m| m.session() == session);
+        Ok(unread)
     }
 }
 
@@ -224,7 +255,7 @@ impl InboxDelivery for SqliteBroker {
                 .await
                 .map_err(internal)?;
         let stuck: HashSet<String> = stuck.into_iter().collect();
-        let mut unread = self.unread(agent).await?;
+        let mut unread = self.deliverable(agent).await?;
         unread.retain(|m| !stuck.contains(&m.session().to_string()));
         let Some(oldest) = unread.first() else {
             return Ok(None);
@@ -238,7 +269,7 @@ impl InboxDelivery for SqliteBroker {
     }
 
     async fn unread_in(&self, agent: &Alias, session: SessionKey) -> Result<Vec<Message>> {
-        let mut unread = self.unread(agent).await?;
+        let mut unread = self.deliverable(agent).await?;
         unread.retain(|m| m.session() == session);
         Ok(unread)
     }
@@ -298,6 +329,16 @@ impl InboxDelivery for SqliteBroker {
             )));
         }
         Ok(())
+    }
+
+    async fn is_stopped(&self, chain: CorrelationId) -> Result<bool> {
+        let found: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM stopped_chains WHERE correlation_id = ?")
+                .bind(chain.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        Ok(found.is_some())
     }
 }
 
@@ -360,10 +401,66 @@ impl DeliveryControl for SqliteBroker {
 
     async fn skip(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()> {
         require_operator(caller)?;
-        let newest = self.unread_in(agent, session).await?.last().map(|m| m.id);
+        let mut unread = self.unread(agent).await?;
+        unread.retain(|m| m.session() == session);
+        let newest = unread.last().map(|m| m.id);
         let newest = newest
             .ok_or_else(|| Error::NotFound(format!("unread messages of {agent} in {session}")))?;
         self.advance_cursor(agent, session, newest).await
+    }
+
+    async fn stop_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()> {
+        require_operator(caller)?;
+        sqlx::query(
+            "INSERT INTO stopped_chains (correlation_id, stopped_at) VALUES (?, ?)
+             ON CONFLICT (correlation_id) DO NOTHING",
+        )
+        .bind(chain.to_string())
+        .bind(Timestamp::now().as_unix_millis())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn resume_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()> {
+        require_operator(caller)?;
+        let deleted = sqlx::query("DELETE FROM stopped_chains WHERE correlation_id = ?")
+            .bind(chain.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        if deleted.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("stopped chain {chain}")));
+        }
+        // Whoever has mail in the chain gets it now.
+        let recipients: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT m.recipient
+             FROM messages m
+             LEFT JOIN cursors c ON c.recipient = m.recipient AND c.session = m.session
+             WHERE m.correlation_id = ? AND m.seq > COALESCE(c.up_to, 0)",
+        )
+        .bind(chain.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        for recipient in recipients {
+            let alias: Alias = parse(&recipient)?;
+            if self.directory.agent(&alias).await.is_ok() {
+                let _ = self.notifications.send(alias);
+            }
+        }
+        Ok(())
+    }
+
+    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<CorrelationId>> {
+        require_operator(caller)?;
+        let chains: Vec<String> =
+            sqlx::query_scalar("SELECT correlation_id FROM stopped_chains ORDER BY stopped_at")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+        chains.iter().map(|c| parse(c)).collect()
     }
 }
 

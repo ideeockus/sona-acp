@@ -586,3 +586,158 @@ async fn inbox_status_shows_agents_only_to_the_operator() {
         assert!(matches!(denied, Err(Error::Forbidden(_))));
     }
 }
+
+#[tokio::test]
+async fn a_stopped_chain_waits_for_resume() {
+    let s = setup().await;
+    let stopped = s
+        .broker
+        .send(&operator(), to("coder", "a", None))
+        .await
+        .unwrap();
+    let going = s
+        .broker
+        .send(&operator(), to("coder", "b", None))
+        .await
+        .unwrap();
+    let (coder, chain) = (alias("coder"), stopped.correlation_id);
+
+    s.broker.stop_chain(&operator(), chain).await.unwrap();
+    s.broker.stop_chain(&operator(), chain).await.unwrap();
+    assert!(s.broker.is_stopped(chain).await.unwrap());
+    assert_eq!(s.broker.stopped_chains(&operator()).await.unwrap(), [chain]);
+    let batch = s.broker.next_batch(&coder).await.unwrap().unwrap();
+    assert_eq!(batch.session, going.session());
+    s.broker
+        .advance_cursor(&coder, going.session(), going.id)
+        .await
+        .unwrap();
+    assert!(s.broker.next_batch(&coder).await.unwrap().is_none());
+
+    s.notified();
+    s.broker.resume_chain(&operator(), chain).await.unwrap();
+    assert_eq!(s.notified(), std::slice::from_ref(&coder));
+    let batch = s.broker.next_batch(&coder).await.unwrap().unwrap();
+    assert_eq!(batch.messages[0].id, stopped.id);
+    let again = s.broker.resume_chain(&operator(), chain).await;
+    assert!(matches!(again, Err(Error::NotFound(_))));
+}
+
+#[tokio::test]
+async fn stopping_a_chain_leaves_other_chains_of_the_task() {
+    let s = setup().await;
+    let task = Some(TaskId::new());
+    let stopped = s
+        .broker
+        .send(&operator(), to("coder", "a", task))
+        .await
+        .unwrap();
+    let going = s
+        .broker
+        .send(&operator(), to("coder", "b", task))
+        .await
+        .unwrap();
+    let coder = alias("coder");
+
+    s.broker
+        .stop_chain(&operator(), stopped.correlation_id)
+        .await
+        .unwrap();
+    let batch = s.broker.next_batch(&coder).await.unwrap().unwrap();
+    assert_eq!(
+        batch.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
+        [going.id]
+    );
+    let steerable = s.broker.unread_in(&coder, going.session()).await.unwrap();
+    assert_eq!(steerable.len(), 1);
+    let chain = going.correlation_id;
+    let read = s
+        .broker
+        .read_messages(&agent("coder", chain), going.session())
+        .await;
+    assert_eq!(read.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_operator_still_reads_a_stopped_chain() {
+    let s = setup().await;
+    let chain = CorrelationId::new();
+    let sent = s
+        .broker
+        .send(&agent("coder", chain), to("user", "done", None))
+        .await
+        .unwrap();
+    s.broker.stop_chain(&operator(), chain).await.unwrap();
+
+    let read = s
+        .broker
+        .read_messages(&operator(), sent.session())
+        .await
+        .unwrap();
+    assert_eq!(read[0].id, sent.id);
+}
+
+#[tokio::test]
+async fn agents_cannot_write_into_a_stopped_chain() {
+    let s = setup().await;
+    let chain = CorrelationId::new();
+    s.broker.stop_chain(&operator(), chain).await.unwrap();
+
+    let sent = s
+        .broker
+        .send(&agent("coder", chain), to("manager", "more", None))
+        .await;
+    assert!(matches!(sent, Err(Error::Forbidden(_))));
+    let denied = s.journal.0.lock().unwrap().pop().unwrap();
+    assert_eq!(denied.reason.as_deref(), Some("the chain is stopped"));
+}
+
+#[tokio::test]
+async fn the_operator_may_write_into_a_stopped_chain() {
+    let s = setup().await;
+    let question = s
+        .broker
+        .send(
+            &agent("coder", CorrelationId::new()),
+            to("user", "which db?", None),
+        )
+        .await
+        .unwrap();
+    let chain = question.correlation_id;
+    s.broker.stop_chain(&operator(), chain).await.unwrap();
+
+    let mut answer = to("coder", "postgres", None);
+    answer.in_reply_to = Some(question.id);
+    let answer = s.broker.send(&operator(), answer).await.unwrap();
+    assert_eq!(answer.correlation_id, chain);
+    // Kept for later, delivered after `resume`.
+    assert!(
+        s.broker
+            .next_batch(&alias("coder"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    s.broker.resume_chain(&operator(), chain).await.unwrap();
+    assert!(
+        s.broker
+            .next_batch(&alias("coder"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn only_the_operator_stops_and_resumes_chains() {
+    let s = setup().await;
+    let chain = CorrelationId::new();
+    let coder = agent("coder", chain);
+    for denied in [
+        s.broker.stop_chain(&coder, chain).await,
+        s.broker.resume_chain(&coder, chain).await,
+        s.broker.stopped_chains(&coder).await.map(drop),
+    ] {
+        assert!(matches!(denied, Err(Error::Forbidden(_))));
+    }
+}

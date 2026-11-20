@@ -83,13 +83,16 @@ fn operator_only(caller: &Caller) -> Result<()> {
 }
 
 /// Stores the sender it was given, so tests can see who the API said was calling.
-#[derive(Default)]
-struct Broker(Mutex<Vec<Caller>>);
+/// Every message is in one chain.
+struct Broker {
+    callers: Mutex<Vec<Caller>>,
+    chain: CorrelationId,
+}
 
 #[async_trait]
 impl MessageBroker for Broker {
     async fn send(&self, caller: &Caller, message: NewMessage) -> Result<Message> {
-        self.0.lock().unwrap().push(caller.clone());
+        self.callers.lock().unwrap().push(caller.clone());
         Ok(Message {
             id: MessageId::new(),
             from: caller.alias().clone(),
@@ -98,7 +101,7 @@ impl MessageBroker for Broker {
             subject: message.subject,
             task_id: message.task_id,
             in_reply_to: message.in_reply_to,
-            correlation_id: CorrelationId::new(),
+            correlation_id: self.chain,
             created_at: Timestamp::now(),
         })
     }
@@ -153,9 +156,21 @@ impl JournalReader for Journal {
     }
 }
 
-/// Records retried and skipped sessions; the operator only.
+/// What Broker and Runtime were asked to do, in order.
 #[derive(Default)]
-struct Delivery(Mutex<Vec<(&'static str, Alias, SessionKey)>>);
+struct Log(Mutex<Vec<String>>);
+
+impl Log {
+    fn push(&self, entry: String) {
+        self.0.lock().unwrap().push(entry);
+    }
+}
+
+/// Logs what it is asked and keeps the stopped chains; the operator only.
+struct Delivery {
+    log: Arc<Log>,
+    stopped: Mutex<Vec<CorrelationId>>,
+}
 
 #[async_trait]
 impl DeliveryControl for Delivery {
@@ -165,49 +180,72 @@ impl DeliveryControl for Delivery {
     }
     async fn retry(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()> {
         operator_only(caller)?;
-        self.0
-            .lock()
-            .unwrap()
-            .push(("retry", agent.clone(), session));
+        self.log.push(format!("retry {} {session}", agent.as_str()));
         Ok(())
     }
     async fn skip(&self, caller: &Caller, agent: &Alias, session: SessionKey) -> Result<()> {
         operator_only(caller)?;
-        self.0
-            .lock()
-            .unwrap()
-            .push(("skip", agent.clone(), session));
+        self.log.push(format!("skip {} {session}", agent.as_str()));
         Ok(())
+    }
+    async fn stop_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()> {
+        operator_only(caller)?;
+        self.log.push(format!("stop {chain}"));
+        self.stopped.lock().unwrap().push(chain);
+        Ok(())
+    }
+    async fn resume_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()> {
+        operator_only(caller)?;
+        self.log.push(format!("resume {chain}"));
+        self.stopped.lock().unwrap().retain(|c| *c != chain);
+        Ok(())
+    }
+    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<CorrelationId>> {
+        operator_only(caller)?;
+        Ok(self.stopped.lock().unwrap().clone())
     }
 }
 
-struct NoRuns;
+/// No Run is active; aborts are logged.
+struct Runs(Arc<Log>);
 
 #[async_trait]
-impl RunStatus for NoRuns {
+impl RunControl for Runs {
     async fn active_runs(&self, caller: &Caller) -> Result<Vec<ActiveRun>> {
         operator_only(caller)?;
         Ok(Vec::new())
+    }
+    async fn abort_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()> {
+        operator_only(caller)?;
+        self.0.push(format!("abort {chain}"));
+        Ok(())
     }
 }
 
 struct Setup {
     app: Router,
     broker: Arc<Broker>,
-    delivery: Arc<Delivery>,
+    log: Arc<Log>,
     journal: Arc<Journal>,
 }
 
 fn setup() -> Setup {
-    let broker = Arc::new(Broker::default());
-    let delivery = Arc::new(Delivery::default());
+    let broker = Arc::new(Broker {
+        callers: Mutex::default(),
+        chain: CorrelationId::new(),
+    });
+    let log = Arc::new(Log::default());
+    let delivery = Arc::new(Delivery {
+        log: log.clone(),
+        stopped: Mutex::default(),
+    });
     let journal = Arc::new(Journal::default());
     let app = router(Services {
         credentials: Arc::new(Tokens),
         registry: Arc::new(Registry),
         broker: broker.clone(),
-        delivery: delivery.clone(),
-        runs: Arc::new(NoRuns),
+        delivery,
+        runs: Arc::new(Runs(log.clone())),
         tasks: Arc::new(BrokenTasks),
         gateway: Arc::new(DenyBash),
         journal: journal.clone(),
@@ -215,7 +253,7 @@ fn setup() -> Setup {
     Setup {
         app,
         broker,
-        delivery,
+        log,
         journal,
     }
 }
@@ -283,7 +321,7 @@ async fn the_sender_comes_from_the_credential_not_the_body() {
 
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(sent["from"], "coder");
-    assert_eq!(s.broker.0.lock().unwrap()[0].alias(), &alias("coder"));
+    assert_eq!(s.broker.callers.lock().unwrap()[0].alias(), &alias("coder"));
 }
 
 #[tokio::test]
@@ -423,7 +461,8 @@ async fn sessions_are_read_by_key() {
 async fn status_is_for_the_operator() {
     let s = setup();
     let (status, body) = call(&s.app, Method::GET, "/v1/status", Some(OPERATOR), None).await;
-    assert_eq!((status, body), (StatusCode::OK, json!([])));
+    let empty = json!({ "agents": [], "stopped_chains": [] });
+    assert_eq!((status, body), (StatusCode::OK, empty));
     let (status, _) = call(&s.app, Method::GET, "/v1/status", Some(AGENT), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -438,14 +477,69 @@ async fn retry_and_skip_name_an_agent_and_a_session() {
         assert_eq!(status, StatusCode::NO_CONTENT);
     }
     assert_eq!(
-        *s.delivery.0.lock().unwrap(),
+        *s.log.0.lock().unwrap(),
         [
-            ("retry", alias("coder"), session),
-            ("skip", alias("coder"), session)
+            format!("retry coder {session}"),
+            format!("skip coder {session}")
         ]
     );
 
     let uri = "/v1/agents/coder/sessions/inbox/retry";
     let (status, _) = call(&s.app, Method::POST, uri, Some(OPERATOR), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn stop_reaches_broker_before_runtime() {
+    let s = setup();
+    let chain = CorrelationId::new();
+    for action in ["stop", "resume"] {
+        let uri = format!("/v1/chains/{chain}/{action}");
+        let (status, _) = call(&s.app, Method::POST, &uri, Some(OPERATOR), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    assert_eq!(
+        *s.log.0.lock().unwrap(),
+        [
+            format!("stop {chain}"),
+            format!("abort {chain}"),
+            format!("resume {chain}")
+        ]
+    );
+    let (status, _) = call(
+        &s.app,
+        Method::POST,
+        "/v1/chains/42/stop",
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn the_operator_learns_that_the_chain_is_stopped() {
+    let s = setup();
+    let message = json!({ "to": "coder", "body": "hi", "subject": null,
+                          "task_id": null, "in_reply_to": null });
+    let send = |token| {
+        call(
+            &s.app,
+            Method::POST,
+            "/v1/messages",
+            Some(token),
+            Some(message.clone()),
+        )
+    };
+
+    let (_, sent) = send(OPERATOR).await;
+    assert_eq!(sent["chain_stopped"], false);
+    let uri = format!("/v1/chains/{}/stop", s.broker.chain);
+    call(&s.app, Method::POST, &uri, Some(OPERATOR), None).await;
+    let (status, sent) = send(OPERATOR).await;
+    assert_eq!(
+        (status, &sent["chain_stopped"]),
+        (StatusCode::CREATED, &json!(true))
+    );
+    assert_eq!(sent["body"], "hi");
 }
