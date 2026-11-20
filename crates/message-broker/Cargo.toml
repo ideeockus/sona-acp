@@ -1,0 +1,17 @@
+[package]
+name = "control-plane-message-broker"
+description = "Messages, inboxes and cursors on SQLite."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+control-plane-common.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

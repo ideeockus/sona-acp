@@ -1,0 +1,19 @@
+[package]
+name = "control-plane-agent-registry"
+description = "Agents, credentials and their SQLite storage."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+control-plane-common.workspace = true
+rand.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
