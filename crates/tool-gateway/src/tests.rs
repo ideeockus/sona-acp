@@ -184,6 +184,10 @@ async fn every_check_is_recorded() {
         ]
     );
     assert_eq!(events[1].reason.as_deref(), Some("bash is not granted"));
+    assert_eq!(
+        (events[0].path.as_deref(), events[1].path.as_deref()),
+        (Some("/work/a"), None)
+    );
     let Caller::Agent { run_id, .. } = caller else {
         unreachable!()
     };

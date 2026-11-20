@@ -104,6 +104,14 @@ async fn an_agent_answers_the_operator_past_gateway() {
         decisions,
         expected.map(|(a, d)| (a.to_owned(), d.to_owned())).to_vec()
     );
+    // The refused read is journaled with the path it asked for.
+    let read = journal
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["component"] == "gateway" && e["action"] == "read")
+        .unwrap();
+    assert_eq!(read["path"], "/etc/hosts");
     let finished = journal
         .as_array()
         .unwrap()

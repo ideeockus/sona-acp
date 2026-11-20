@@ -212,6 +212,7 @@ impl Inner {
                 run_id: None,
                 correlation_id,
                 task_id,
+                path: None,
             })
             .await
     }

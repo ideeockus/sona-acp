@@ -43,6 +43,10 @@ pub struct Event {
     pub run_id: Option<RunId>,
     pub correlation_id: Option<CorrelationId>,
     pub task_id: Option<TaskId>,
+    /// The file a file tool asked for, as the extension resolved it (D76, D102).
+    /// Missing in entries written before.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 impl Event {
@@ -69,6 +73,7 @@ impl Event {
             run_id,
             correlation_id,
             task_id: None,
+            path: None,
         }
     }
 }
@@ -145,7 +150,18 @@ mod tests {
         assert_eq!(json["actor"], "coder");
         assert_eq!(json["component"], "gateway");
         assert_eq!(json["decision"], "deny");
-        assert_eq!(serde_json::from_value::<JournalEntry>(json).unwrap(), entry);
+        assert_eq!(
+            serde_json::from_value::<JournalEntry>(json.clone()).unwrap(),
+            entry
+        );
+
+        // Entries written before paths were recorded still read.
+        let mut before = json;
+        before.as_object_mut().unwrap().remove("path");
+        assert_eq!(
+            serde_json::from_value::<JournalEntry>(before).unwrap(),
+            entry
+        );
     }
 
     #[test]

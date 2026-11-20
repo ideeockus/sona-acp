@@ -51,6 +51,7 @@ impl ToolGateway for Gateway {
             .record(Event {
                 decision: Some(decision),
                 reason,
+                path: call.path,
                 ..Event::new(caller, Component::Gateway, call.tool)
             })
             .await?;
