@@ -16,7 +16,7 @@ const reply = (value: unknown) => ({
 const Alias = (description: string) => Type.String({ description });
 const Id = (description: string) => Type.String({ description });
 const Status = Type.Union(
-  ["open", "in_progress", "needs_owner", "done", "cancelled"].map((s) => Type.Literal(s)),
+  ["open", "in_progress", "needs_human", "done", "cancelled"].map((s) => Type.Literal(s)),
 );
 
 const sendMessage = defineTool({

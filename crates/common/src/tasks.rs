@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 pub enum TaskStatus {
     Open,
     InProgress,
-    /// Waiting for a decision of the operator.
-    NeedsOwner,
+    /// Waiting for a decision of a human, the operator.
+    NeedsHuman,
     Done,
     Cancelled,
 }

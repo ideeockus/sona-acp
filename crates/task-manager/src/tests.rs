@@ -184,7 +184,7 @@ async fn participants_move_work_but_only_creator_closes() {
     m.update_task(&agent("coder"), task.id, status(TaskStatus::InProgress))
         .await
         .unwrap();
-    m.update_task(&agent("tester"), task.id, status(TaskStatus::NeedsOwner))
+    m.update_task(&agent("tester"), task.id, status(TaskStatus::NeedsHuman))
         .await
         .unwrap();
     assert!(matches!(

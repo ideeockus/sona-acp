@@ -269,7 +269,7 @@ correlation_id  # ставит Broker, всегда заполнено (D41)
 ```text
 task_id
 title, context
-status          # open → in_progress → done / cancelled, плюс needs_owner
+status          # open → in_progress → done / cancelled, плюс needs_human
 creator, created_at
 assignee        # nullable: один ответственный, двигает задачу дальше
 members         # остальные агенты, работающие над задачей
@@ -283,7 +283,7 @@ history         # append-only: when, who, what
 - Автора и время записей ставит Task Manager по токену.
 - `done` и `cancelled` ставят только создатель или оператор: задачу создаёт Manager, он её и закрывает. Закрытая задача не меняется.
 - Задача сама не будит агентов, будят сообщения.
-- `needs_owner` — задача ждёт решения оператора. Когда Manager к нему обращается — O29.
+- `needs_human` — задача ждёт решения оператора. Когда Manager к нему обращается — O29.
 
 Как оператор видит задачи («в работе / завершено / ждёт тебя» с результатом) — O30.
 

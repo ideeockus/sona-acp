@@ -100,7 +100,7 @@ enum TasksCommand {
     },
     Update {
         id: TaskId,
-        /// open, in_progress, needs_owner, done or cancelled (D53).
+        /// open, in_progress, needs_human, done or cancelled (D53).
         #[arg(long, value_parser = parse_status)]
         status: Option<TaskStatus>,
         #[arg(long)]
@@ -271,7 +271,7 @@ fn json(value: impl Serialize) -> Value {
 
 fn parse_status(value: &str) -> Result<TaskStatus, String> {
     serde_json::from_value(Value::String(value.to_owned()))
-        .map_err(|_| "expected open, in_progress, needs_owner, done or cancelled".to_owned())
+        .map_err(|_| "expected open, in_progress, needs_human, done or cancelled".to_owned())
 }
 
 #[cfg(test)]
