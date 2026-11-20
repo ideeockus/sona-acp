@@ -4,7 +4,7 @@ use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
 use control_plane_common::broker::InboxStatus;
 use control_plane_common::registry::Secret;
-use control_plane_common::runtime::ActiveRun;
+use control_plane_common::runtime::{ActiveRun, RunFilter, RunRecord};
 use control_plane_common::{Caller, MessageId, Result, Timestamp};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -219,6 +219,16 @@ impl RunControl for Runs {
         operator_only(caller)?;
         self.0.push(format!("abort {chain}"));
         Ok(())
+    }
+    async fn runs(&self, caller: &Caller, filter: RunFilter) -> Result<Vec<RunRecord>> {
+        operator_only(caller)?;
+        let agent = filter.agent.map(|a| a.as_str().to_owned());
+        self.0.push(format!("runs {agent:?} {:?}", filter.chain));
+        Ok(Vec::new())
+    }
+    async fn run(&self, caller: &Caller, run_id: RunId) -> Result<RunRecord> {
+        operator_only(caller)?;
+        Err(Error::NotFound(format!("run {run_id}")))
     }
 }
 
@@ -542,4 +552,34 @@ async fn the_operator_learns_that_the_chain_is_stopped() {
         (StatusCode::CREATED, &json!(true))
     );
     assert_eq!(sent["body"], "hi");
+}
+
+#[tokio::test]
+async fn runs_are_listed_by_agent_and_chain() {
+    let s = setup();
+    let (status, body) = call(
+        &s.app,
+        Method::GET,
+        "/v1/runs?agent=coder",
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
+    assert_eq!(*s.log.0.lock().unwrap(), [r#"runs Some("coder") None"#]);
+
+    let (status, _) = call(
+        &s.app,
+        Method::GET,
+        "/v1/runs?chain=42",
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let uri = format!("/v1/runs/{}", RunId::new());
+    let (status, _) = call(&s.app, Method::GET, &uri, Some(OPERATOR), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&s.app, Method::GET, "/v1/runs", Some(AGENT), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

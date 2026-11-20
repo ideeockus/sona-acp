@@ -13,7 +13,7 @@ use control_plane_common::broker::{DeliveryControl, Message, MessageBroker, NewM
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
 use control_plane_common::registry::{AgentCard, AgentRegistry, Credentials};
-use control_plane_common::runtime::RunControl;
+use control_plane_common::runtime::{RunControl, RunFilter, RunRecord};
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskUpdate, TaskView};
 use control_plane_common::{Alias, Caller, CorrelationId, Error, RunId, SessionKey, TaskId};
@@ -50,6 +50,8 @@ pub fn router(services: Services) -> Router {
         .route("/v1/chains/{id}/stop", post(stop_chain))
         .route("/v1/chains/{id}/resume", post(resume_chain))
         .route("/v1/status", get(status))
+        .route("/v1/runs", get(list_runs))
+        .route("/v1/runs/{id}", get(get_run))
         .route("/v1/journal", get(read_journal))
         .with_state(Arc::new(services))
 }
@@ -205,6 +207,33 @@ async fn status(State(s): Shared, Authenticated(caller): Authenticated) -> Reply
         agents: AgentStatus::of(cards, inboxes, runs),
         stopped_chains: s.delivery.stopped_chains(&caller).await?,
     }))
+}
+
+/// Either filter, both, or none.
+#[derive(Deserialize)]
+struct RunsQuery {
+    agent: Option<String>,
+    chain: Option<String>,
+}
+
+async fn list_runs(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Query(query): Query<RunsQuery>,
+) -> Reply<Vec<RunRecord>> {
+    let filter = RunFilter {
+        agent: query.agent.as_deref().map(parse).transpose()?,
+        chain: query.chain.as_deref().map(parse).transpose()?,
+    };
+    Ok(Json(s.runs.runs(&caller, filter).await?))
+}
+
+async fn get_run(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Reply<RunRecord> {
+    Ok(Json(s.runs.run(&caller, parse(&id)?).await?))
 }
 
 /// Exactly one of `chain`, `run` and `task`.

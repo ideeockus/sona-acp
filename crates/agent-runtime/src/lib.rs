@@ -9,5 +9,6 @@ pub mod launcher;
 pub mod rpc;
 mod run;
 mod runtime;
+mod store;
 
 pub use runtime::{Runtime, RuntimeConfig};

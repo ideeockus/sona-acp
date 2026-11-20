@@ -6,10 +6,12 @@ use control_plane_agent_runtime::{Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentCard, AgentDirectory, Credentials, ModelRef, Secret};
-use control_plane_common::runtime::RunControl;
+use control_plane_common::runtime::{RunControl, RunFilter, RunOutcome, Usage};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId, Timestamp,
 };
+use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -311,6 +313,9 @@ impl Launcher for FakePi {
                 .write_all(b"{\"type\":\"agent_start\"}\n")
                 .await
                 .unwrap();
+            let answer = br#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"toolUse","usage":{"input":100,"output":20,"cacheRead":30,"cacheWrite":0,"totalTokens":150,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.0015}}}}"#;
+            pi_stdout.write_all(answer).await.unwrap();
+            pi_stdout.write_all(b"\n").await.unwrap();
             let tool = br#"{"type":"tool_execution_end","toolCallId":"c1","toolName":"read","result":{},"isError":false}"#;
             pi_stdout.write_all(tool).await.unwrap();
             pi_stdout.write_all(b"\n").await.unwrap();
@@ -352,7 +357,29 @@ struct Setup {
     pi: Arc<FakePi>,
 }
 
-fn setup(scripts: Vec<Script>) -> Setup {
+/// An in-memory database that lives as long as the pool.
+async fn memory_pool() -> SqlitePool {
+    // One connection that never closes: every connection gets its own in-memory database.
+    SqlitePoolOptions::new()
+        .max_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(SqliteConnectOptions::new().in_memory(true))
+        .await
+        .unwrap()
+}
+
+fn operator() -> Caller {
+    Caller::Operator {
+        alias: alias_of("user"),
+    }
+}
+
+async fn setup(scripts: Vec<Script>) -> Setup {
+    setup_on(memory_pool().await, scripts).await
+}
+
+async fn setup_on(pool: SqlitePool, scripts: Vec<Script>) -> Setup {
     let data_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(uuid_dir());
     let tokens = Arc::new(Tokens::default());
     let inbox = Arc::new(Inbox::default());
@@ -371,12 +398,14 @@ fn setup(scripts: Vec<Script>) -> Setup {
     };
     let runtime = Runtime::new(
         config,
+        pool,
         Arc::new(Directory),
         tokens.clone(),
         inbox.clone(),
         journal.clone(),
         pi.clone(),
     )
+    .await
     .unwrap();
     Setup {
         runtime,
@@ -434,7 +463,7 @@ fn env_of<'a>(spec: &'a RunSpec, name: &str) -> &'a str {
 
 #[tokio::test]
 async fn a_run_delivers_its_batch_and_cleans_up() {
-    let s = setup(vec![Script::Settle]);
+    let s = setup(vec![Script::Settle]).await;
     let task = TaskId::new();
     let chain = CorrelationId::new();
     let (first, second) = (
@@ -522,7 +551,7 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
 #[tokio::test]
 async fn same_session_is_steered_other_sessions_wait() {
     let release = Arc::new(Notify::new());
-    let s = setup(vec![Script::SettleWhen(release.clone()), Script::Settle]);
+    let s = setup(vec![Script::SettleWhen(release.clone()), Script::Settle]).await;
     let (task, other) = (TaskId::new(), TaskId::new());
     let chain = CorrelationId::new();
     let first = message("coder", Some(task), chain);
@@ -560,7 +589,7 @@ async fn same_session_is_steered_other_sessions_wait() {
 
 #[tokio::test]
 async fn a_crashed_run_is_retried_after_a_pause() {
-    let s = setup(vec![Script::Crash, Script::Settle]);
+    let s = setup(vec![Script::Crash, Script::Settle]).await;
     let first = message("coder", None, CorrelationId::new());
     s.inbox.add(first.clone());
 
@@ -585,7 +614,7 @@ async fn a_crashed_run_is_retried_after_a_pause() {
 
 #[tokio::test]
 async fn a_session_is_stuck_after_the_last_attempt() {
-    let s = setup(vec![Script::Crash, Script::ModelError, Script::Crash]);
+    let s = setup(vec![Script::Crash, Script::ModelError, Script::Crash]).await;
     let failing = message("coder", None, CorrelationId::new());
     let other = message("coder", None, CorrelationId::new());
     s.inbox.add(failing.clone());
@@ -609,7 +638,7 @@ async fn a_session_is_stuck_after_the_last_attempt() {
 
 #[tokio::test]
 async fn a_failed_model_fails_the_run() {
-    let s = setup(vec![Script::ModelError, Script::Settle]);
+    let s = setup(vec![Script::ModelError, Script::Settle]).await;
     let first = message("coder", None, CorrelationId::new());
     s.inbox.add(first.clone());
 
@@ -630,7 +659,7 @@ async fn a_failed_model_fails_the_run() {
 #[tokio::test]
 async fn the_operator_sees_active_runs() {
     let release = Arc::new(Notify::new());
-    let s = setup(vec![Script::SettleWhen(release.clone())]);
+    let s = setup(vec![Script::SettleWhen(release.clone())]).await;
     let first = message("coder", None, CorrelationId::new());
     s.inbox.add(first.clone());
     let operator = Caller::Operator {
@@ -663,7 +692,7 @@ async fn the_operator_sees_active_runs() {
 
 #[tokio::test]
 async fn stopping_a_chain_aborts_its_run_without_a_failure() {
-    let s = setup(vec![Script::UntilAbort]);
+    let s = setup(vec![Script::UntilAbort]).await;
     let first = message("coder", None, CorrelationId::new());
     s.inbox.add(first.clone());
     let operator = Caller::Operator {
@@ -710,7 +739,7 @@ async fn stopping_a_chain_aborts_its_run_without_a_failure() {
 #[tokio::test]
 async fn a_stop_before_pi_starts_working_aborts_once_it_does() {
     let start = Arc::new(Notify::new());
-    let s = setup(vec![Script::StartWhen(start.clone())]);
+    let s = setup(vec![Script::StartWhen(start.clone())]).await;
     let first = message("coder", None, CorrelationId::new());
     s.inbox.add(first.clone());
     let operator = Caller::Operator {
@@ -752,7 +781,7 @@ async fn a_stop_before_pi_starts_working_aborts_once_it_does() {
 #[tokio::test]
 async fn aborting_another_chain_leaves_the_run_alone() {
     let release = Arc::new(Notify::new());
-    let s = setup(vec![Script::SettleWhen(release.clone())]);
+    let s = setup(vec![Script::SettleWhen(release.clone())]).await;
     let first = message("coder", None, CorrelationId::new());
     s.inbox.add(first.clone());
     let operator = Caller::Operator {
@@ -779,7 +808,7 @@ async fn aborting_another_chain_leaves_the_run_alone() {
 
 #[tokio::test]
 async fn start_revokes_old_tokens_and_wakes_agents_with_mail() {
-    let s = setup(vec![Script::Settle]);
+    let s = setup(vec![Script::Settle]).await;
     let waiting = message("manager", None, CorrelationId::new());
     s.inbox.add(waiting.clone());
 
@@ -805,11 +834,123 @@ async fn relative_paths_are_refused() {
     };
     let result = Runtime::new(
         config,
+        memory_pool().await,
         Arc::new(Directory),
         Arc::new(Tokens::default()),
         Arc::new(Inbox::default()),
         Arc::new(Journal::default()),
         Arc::new(FakePi::default()),
-    );
+    )
+    .await;
     assert!(matches!(result, Err(Error::InvalidInput(_))));
+}
+
+#[tokio::test]
+async fn a_run_is_kept_with_what_it_spent() {
+    let s = setup(vec![Script::Settle]).await;
+    let first = message("coder", None, CorrelationId::new());
+    s.inbox.add(first.clone());
+
+    s.runtime.start().await.unwrap();
+    eventually("message read", || s.inbox.is_read(&first)).await;
+
+    let runs = s
+        .runtime
+        .runs(&operator(), RunFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    let run = &runs[0];
+    assert_eq!((run.agent.as_str(), run.outcome), ("coder", RunOutcome::Ok));
+    assert_eq!(run.correlation_id, first.correlation_id);
+    assert!(run.finished_at.is_some());
+    assert_eq!(
+        run.usage,
+        Usage {
+            tokens_in: 130,
+            tokens_out: 20,
+            cost_micros: 1500
+        }
+    );
+    assert_eq!(s.runtime.run(&operator(), run.run_id).await.unwrap(), *run);
+}
+
+#[tokio::test]
+async fn failed_runs_are_kept_with_the_reason() {
+    let s = setup(vec![Script::Crash, Script::Settle]).await;
+    let first = message("coder", None, CorrelationId::new());
+    s.inbox.add(first.clone());
+
+    s.runtime.start().await.unwrap();
+    eventually("message read", || s.inbox.is_read(&first)).await;
+
+    let runs = s
+        .runtime
+        .runs(&operator(), RunFilter::default())
+        .await
+        .unwrap();
+    let outcomes: Vec<_> = runs.iter().map(|r| r.outcome).collect();
+    // Newest first.
+    assert_eq!(outcomes, [RunOutcome::Ok, RunOutcome::Error]);
+    assert_eq!(
+        runs[1].reason.as_deref(),
+        Some("internal error: Pi exited before settling")
+    );
+}
+
+#[tokio::test]
+async fn runs_left_running_fail_on_the_next_start() {
+    let pool = memory_pool().await;
+    let release = Arc::new(Notify::new());
+    let before = setup_on(pool.clone(), vec![Script::SettleWhen(release)]).await;
+    before
+        .inbox
+        .add(message("coder", None, CorrelationId::new()));
+    before.runtime.start().await.unwrap();
+    eventually("run started", || before.pi.specs.lock().unwrap().len() == 1).await;
+
+    // The control plane restarts while the Run is going.
+    let after = setup_on(pool, vec![]).await;
+    after.runtime.start().await.unwrap();
+    let runs = after
+        .runtime
+        .runs(&operator(), RunFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(runs[0].outcome, RunOutcome::Error);
+    assert_eq!(
+        runs[0].reason.as_deref(),
+        Some("the control plane restarted")
+    );
+}
+
+#[tokio::test]
+async fn runs_are_filtered_and_for_the_operator_only() {
+    let s = setup(vec![Script::Settle, Script::Settle]).await;
+    let coder = message("coder", None, CorrelationId::new());
+    let manager = message("manager", None, CorrelationId::new());
+    s.inbox.add(coder.clone());
+    s.inbox.add(manager.clone());
+
+    s.runtime.start().await.unwrap();
+    eventually("both read", || {
+        s.inbox.is_read(&coder) && s.inbox.is_read(&manager)
+    })
+    .await;
+
+    let filter = RunFilter {
+        agent: Some(alias_of("manager")),
+        chain: None,
+    };
+    let runs = s.runtime.runs(&operator(), filter).await.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].correlation_id, manager.correlation_id);
+
+    let agent = Caller::Agent {
+        alias: alias_of("coder"),
+        run_id: RunId::new(),
+        correlation_id: coder.correlation_id,
+    };
+    let denied = s.runtime.runs(&agent, RunFilter::default()).await;
+    assert!(matches!(denied, Err(Error::Forbidden(_))));
 }

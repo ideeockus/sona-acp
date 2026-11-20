@@ -112,6 +112,13 @@ async fn an_agent_answers_the_operator_past_gateway() {
         .unwrap();
     assert_eq!(finished["result"], "ok");
 
+    // The Run is kept with the tokens Pi reported.
+    let runs = operator.call("GET", "/v1/runs?agent=coder", None).await;
+    assert_eq!(runs.as_array().unwrap().len(), 1);
+    assert_eq!(runs[0]["outcome"], "ok");
+    assert_eq!(runs[0]["correlation_id"], chain.as_str());
+    assert!(runs[0]["usage"]["tokens_in"].as_u64().unwrap() > 0);
+
     // Afterwards the agent is idle with nothing left to deliver.
     let status = operator.call("GET", "/v1/status", None).await;
     assert_eq!(

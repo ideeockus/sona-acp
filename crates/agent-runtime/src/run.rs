@@ -8,7 +8,7 @@ use control_plane_common::broker::{InboxBatch, Message};
 use control_plane_common::journal::{Component, Event as JournalEvent, Outcome};
 use control_plane_common::layout::{EXTENSION_DIR, PI_DIR, SESSIONS_DIR, WORKDIR};
 use control_plane_common::registry::{AgentCard, Secret};
-use control_plane_common::runtime::ActiveRun;
+use control_plane_common::runtime::{ActiveRun, RunOutcome, RunRecord, Usage};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId, Timestamp,
 };
@@ -97,18 +97,27 @@ impl Inner {
                 self.inbox
                     .advance_cursor(agent, run.batch.session, last)
                     .await?;
+                self.runs.finish(run_id, RunOutcome::Ok, None).await?;
                 self.record(&run, "run_finished", Some(Outcome::Ok), None)
                     .await
             }
             Ok(Some(Ended::Stopped)) => {
-                let reason = Some("the chain was stopped".to_owned());
-                self.record(&run, "run_finished", None, reason).await
+                let reason = "the chain was stopped";
+                self.runs
+                    .finish(run_id, RunOutcome::Stopped, Some(reason))
+                    .await?;
+                self.record(&run, "run_finished", None, Some(reason.to_owned()))
+                    .await
             }
             // The chain was stopped before the Run began: nothing happened.
             Ok(None) => Ok(()),
             Err(error) => {
-                let reason = Some(error.to_string());
-                self.record(&run, "run_finished", Some(Outcome::Error), reason)
+                let reason = error.to_string();
+                // The Run may have failed before it was stored; then nothing is updated.
+                self.runs
+                    .finish(run_id, RunOutcome::Error, Some(&reason))
+                    .await?;
+                self.record(&run, "run_finished", Some(Outcome::Error), Some(reason))
                     .await?;
                 Err(error)
             }
@@ -118,6 +127,19 @@ impl Inner {
     /// Records the start, issues the token and runs Pi; the token dies with the Run.
     async fn issue_and_drive(&self, run: &Run, wake: &Notify, stop: &Notify) -> Result<Ended> {
         let agent = run.caller.alias();
+        self.runs
+            .begin(&RunRecord {
+                run_id: run.run_id,
+                agent: agent.clone(),
+                session: run.batch.session,
+                correlation_id: run.correlation_id,
+                started_at: Timestamp::now(),
+                finished_at: None,
+                outcome: RunOutcome::Running,
+                reason: None,
+                usage: Usage::default(),
+            })
+            .await?;
         self.record(run, "run_started", None, None).await?;
         let token = self
             .credentials
@@ -232,6 +254,9 @@ impl Inner {
                 event = events.next() => match event? {
                     Some(Event::MessageEnd { message }) if message.role == "assistant" => {
                         model_error = message.model_error();
+                        if let Some(usage) = &message.usage {
+                            self.runs.add_usage(run.run_id, usage.to_usage()).await?;
+                        }
                     }
                     Some(Event::AgentStart) => {
                         working = true;

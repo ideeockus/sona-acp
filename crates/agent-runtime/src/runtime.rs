@@ -1,12 +1,14 @@
 //! Following Broker's notifications and serving agents one Run at a time (D12, D30, D86).
 
 use crate::launcher::Launcher;
+use crate::store::RunStore;
 use async_trait::async_trait;
 use control_plane_common::broker::{InboxDelivery, Notifications};
 use control_plane_common::journal::{Component, Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentDirectory, Credentials};
-use control_plane_common::runtime::{ActiveRun, RunControl};
-use control_plane_common::{Alias, Caller, CorrelationId, Error, Result, SessionKey};
+use control_plane_common::runtime::{ActiveRun, RunControl, RunFilter, RunRecord};
+use control_plane_common::{Alias, Caller, CorrelationId, Error, Result, RunId, SessionKey};
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -42,6 +44,7 @@ pub(crate) struct Inner {
     pub(crate) inbox: Arc<dyn InboxDelivery>,
     pub(crate) journal: Arc<dyn JournalWriter>,
     pub(crate) launcher: Arc<dyn Launcher>,
+    pub(crate) runs: RunStore,
     /// Agents being served, each with the signal that new mail arrived.
     serving: Mutex<HashMap<Alias, Arc<Notify>>>,
     /// Runs in progress by agent, each with the signal to abort it (D27).
@@ -49,8 +52,10 @@ pub(crate) struct Inner {
 }
 
 impl Runtime {
-    pub fn new(
+    /// `pool` is Runtime's own database, for the Runs it keeps (D97).
+    pub async fn new(
         config: RuntimeConfig,
+        pool: SqlitePool,
         directory: Arc<dyn AgentDirectory>,
         credentials: Arc<dyn Credentials>,
         inbox: Arc<dyn InboxDelivery>,
@@ -66,9 +71,11 @@ impl Runtime {
                 )));
             }
         }
+        let runs = RunStore::new(pool).await?;
         Ok(Self {
             inner: Arc::new(Inner {
                 config,
+                runs,
                 directory,
                 credentials,
                 inbox,
@@ -80,11 +87,13 @@ impl Runtime {
         })
     }
 
-    /// Call once on startup. No Run survived the restart, so neither may its token (D24).
+    /// Call once on startup. No Run survived the restart, so neither may its token (D24),
+    /// and a Run still marked running has failed.
     /// Then Runtime wakes agents that already have mail and follows Broker's
     /// notifications from there on (D15, D86).
     pub async fn start(&self) -> Result<()> {
         self.inner.credentials.revoke_all_run_tokens().await?;
+        self.inner.runs.abandon_unfinished().await?;
         // Subscribe first, so a message stored while reconciling is not missed.
         let notifications = self.inner.inbox.subscribe();
         self.inner.reconcile().await?;
@@ -212,6 +221,16 @@ impl RunControl for Runtime {
             }
         }
         Ok(())
+    }
+
+    async fn runs(&self, caller: &Caller, filter: RunFilter) -> Result<Vec<RunRecord>> {
+        require_operator(caller)?;
+        self.inner.runs.list(&filter).await
+    }
+
+    async fn run(&self, caller: &Caller, run_id: RunId) -> Result<RunRecord> {
+        require_operator(caller)?;
+        self.inner.runs.get(run_id).await
     }
 }
 

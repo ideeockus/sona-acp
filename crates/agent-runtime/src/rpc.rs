@@ -3,6 +3,7 @@
 //! Only what Agent Runtime uses is modelled. Unknown records parse as [`Event::Other`],
 //! so a newer Pi with extra events does not break us.
 
+use control_plane_common::runtime::Usage;
 use control_plane_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -18,7 +19,7 @@ pub enum Command {
     Abort,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(
     tag = "type",
     rename_all = "snake_case",
@@ -53,15 +54,48 @@ pub enum Event {
 }
 
 /// The part of a finished message that Runtime looks at.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EndedMessage {
     pub role: String,
+    /// What the model's answer cost; absent on other messages.
+    #[serde(default)]
+    pub usage: Option<PiUsage>,
     /// `error` once Pi gave up on the model provider.
     #[serde(default)]
     pub stop_reason: Option<String>,
     #[serde(default)]
     pub error_message: Option<String>,
+}
+
+/// Pi's usage of one model answer, as much of it as Runtime keeps (D97).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiUsage {
+    pub input: u64,
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+    pub cost: PiCost,
+}
+
+/// In US dollars.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PiCost {
+    pub total: f64,
+}
+
+impl PiUsage {
+    pub fn to_usage(&self) -> Usage {
+        Usage {
+            tokens_in: self.input + self.cache_read + self.cache_write,
+            tokens_out: self.output,
+            // A negative or broken cost counts as none rather than as a huge one.
+            cost_micros: (self.cost.total * 1_000_000.0).round().max(0.0) as u64,
+        }
+    }
 }
 
 impl EndedMessage {

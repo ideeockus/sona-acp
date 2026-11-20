@@ -117,26 +117,30 @@ async fn serve(config: Config) -> Result<(), Failure> {
     );
     let gateway = Arc::new(Gateway::new(registry.clone(), journal.clone()));
 
-    let runtime = Arc::new(Runtime::new(
-        RuntimeConfig {
-            data_dir: config.data_dir.clone(),
-            extension: config.extension,
-            api_url: config.api_url,
-            models_json: config.models_json,
-            provider_env: provider_env(&config.provider_env)?,
-            // Numbers to be tuned on the first real runs (O32).
-            retry_delays: vec![Duration::from_secs(30), Duration::from_secs(120)],
-        },
-        registry.clone(),
-        registry.clone(),
-        broker.clone(),
-        journal.clone(),
-        Arc::new(DockerLauncher::new(
-            config.agent_image,
-            config.agent_network,
-            ContainerUser::owner_of(&config.data_dir)?,
-        )),
-    )?);
+    let runtime = Arc::new(
+        Runtime::new(
+            RuntimeConfig {
+                data_dir: config.data_dir.clone(),
+                extension: config.extension,
+                api_url: config.api_url,
+                models_json: config.models_json,
+                provider_env: provider_env(&config.provider_env)?,
+                // Numbers to be tuned on the first real runs (O32).
+                retry_delays: vec![Duration::from_secs(30), Duration::from_secs(120)],
+            },
+            database(&config.data_dir, "runtime").await?,
+            registry.clone(),
+            registry.clone(),
+            broker.clone(),
+            journal.clone(),
+            Arc::new(DockerLauncher::new(
+                config.agent_image,
+                config.agent_network,
+                ContainerUser::owner_of(&config.data_dir)?,
+            )),
+        )
+        .await?,
+    );
     runtime.start().await?;
 
     let app = router(Services {

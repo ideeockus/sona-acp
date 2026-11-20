@@ -67,6 +67,13 @@ enum Command {
     Stop { chain: CorrelationId },
     /// Delivers a stopped chain again, with what arrived meanwhile (D27).
     Resume { chain: CorrelationId },
+    /// The newest Runs with what they spent (D97).
+    Runs {
+        #[arg(long)]
+        agent: Option<Alias>,
+        #[arg(long)]
+        chain: Option<CorrelationId>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -254,6 +261,21 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         ),
         Command::Stop { chain } => (Method::POST, format!("/v1/chains/{chain}/stop"), None),
         Command::Resume { chain } => (Method::POST, format!("/v1/chains/{chain}/resume"), None),
+        Command::Runs { agent, chain } => {
+            let mut query = Vec::new();
+            if let Some(agent) = agent {
+                query.push(format!("agent={}", agent.as_str()));
+            }
+            if let Some(chain) = chain {
+                query.push(format!("chain={chain}"));
+            }
+            let query = if query.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", query.join("&"))
+            };
+            (Method::GET, format!("/v1/runs{query}"), None)
+        }
     })
 }
 
@@ -356,6 +378,14 @@ mod tests {
         let (_, path, _) = request_of(&["resume", &chain.to_string()]);
         assert_eq!(path, format!("/v1/chains/{chain}/resume"));
         assert!(parse(&["stop", "chain-1"]).is_err());
+    }
+
+    #[test]
+    fn runs_take_optional_filters() {
+        assert_eq!(request_of(&["runs"]).1, "/v1/runs");
+        let chain = CorrelationId::new();
+        let (_, path, _) = request_of(&["runs", "--agent", "coder", "--chain", &chain.to_string()]);
+        assert_eq!(path, format!("/v1/runs?agent=coder&chain={chain}"));
     }
 
     #[test]
