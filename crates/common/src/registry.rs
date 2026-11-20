@@ -32,13 +32,25 @@ pub struct AgentCard {
     pub hue: Option<u16>,
 }
 
-/// An agent as Registry keeps it: its card and the card's version (D95). An edit
-/// sends it back with the version it was based on.
+/// An agent as Registry keeps it: its card, the card's version (D95) and whether it
+/// works (D96). An edit sends it back with the version it was based on; the state
+/// changes only by disabling or enabling.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agent {
     #[serde(flatten)]
     pub card: AgentCard,
     pub version: u32,
+    #[serde(default)]
+    pub state: AgentState,
+}
+
+/// A disabled agent is not woken and takes no messages; its history stays (D96).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentState {
+    #[default]
+    Active,
+    Disabled,
 }
 
 /// One version of a card: who saved it and when (D95).
@@ -151,6 +163,15 @@ pub trait AgentRegistry: Send + Sync {
 
     /// Every version of an agent's card, newest first. Operator only.
     async fn agent_versions(&self, caller: &Caller, alias: &Alias) -> Result<Vec<AgentVersion>>;
+
+    /// Stops waking the agent and ends its Run tokens at once (D96, D101). Operator only.
+    async fn disable_agent(&self, caller: &Caller, alias: &Alias) -> Result<()>;
+
+    async fn enable_agent(&self, caller: &Caller, alias: &Alias) -> Result<()>;
+
+    /// Removes the card for good. The history stays, and so does the alias: a new
+    /// agent under it would inherit another's messages and sessions (D96). Operator only.
+    async fn delete_agent(&self, caller: &Caller, alias: &Alias) -> Result<()>;
 }
 
 /// What other components read. Internal, never exposed through the API.
@@ -158,8 +179,9 @@ pub trait AgentRegistry: Send + Sync {
 pub trait AgentDirectory: Send + Sync {
     async fn agent(&self, alias: &Alias) -> Result<AgentCard>;
 
-    /// The card with its version, for a Run to record which one it ran with (D95).
-    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent>;
+    /// The card with its version and state: a Run records the version it ran with
+    /// (D95), and nobody delivers to a disabled agent (D96).
+    async fn record(&self, alias: &Alias) -> Result<Agent>;
 }
 
 /// Issuing and checking credentials. Internal, never exposed through the API.

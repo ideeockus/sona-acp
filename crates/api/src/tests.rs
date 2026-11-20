@@ -57,8 +57,8 @@ impl Credentials for Tokens {
     }
 }
 
-/// Only the operator manages agents, like the real Registry.
-struct Registry;
+/// Only the operator manages agents, like the real Registry. Logs state changes.
+struct Registry(Arc<Log>);
 
 #[async_trait]
 impl AgentRegistry for Registry {
@@ -83,6 +83,21 @@ impl AgentRegistry for Registry {
     async fn agent_versions(&self, caller: &Caller, _: &Alias) -> Result<Vec<AgentVersion>> {
         operator_only(caller)?;
         Ok(Vec::new())
+    }
+    async fn disable_agent(&self, caller: &Caller, alias: &Alias) -> Result<()> {
+        operator_only(caller)?;
+        self.0.push(format!("disable {alias}"));
+        Ok(())
+    }
+    async fn enable_agent(&self, caller: &Caller, alias: &Alias) -> Result<()> {
+        operator_only(caller)?;
+        self.0.push(format!("enable {alias}"));
+        Ok(())
+    }
+    async fn delete_agent(&self, caller: &Caller, alias: &Alias) -> Result<()> {
+        operator_only(caller)?;
+        self.0.push(format!("delete {alias}"));
+        Ok(())
     }
 }
 
@@ -223,6 +238,11 @@ impl DeliveryControl for Delivery {
             })
             .collect())
     }
+    async fn deliver_pending(&self, caller: &Caller, agent: &Alias) -> Result<()> {
+        operator_only(caller)?;
+        self.log.push(format!("deliver {agent}"));
+        Ok(())
+    }
 }
 
 /// No Run is active; aborts are logged.
@@ -237,6 +257,11 @@ impl RunControl for Runs {
     async fn abort_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()> {
         operator_only(caller)?;
         self.0.push(format!("abort {chain}"));
+        Ok(())
+    }
+    async fn abort_agent(&self, caller: &Caller, agent: &Alias, reason: &str) -> Result<()> {
+        operator_only(caller)?;
+        self.0.push(format!("abort {agent}: {reason}"));
         Ok(())
     }
     async fn runs(&self, caller: &Caller, filter: RunFilter) -> Result<Vec<RunRecord>> {
@@ -271,7 +296,7 @@ fn setup() -> Setup {
     let journal = Arc::new(Journal::default());
     let app = router(Services {
         credentials: Arc::new(Tokens),
-        registry: Arc::new(Registry),
+        registry: Arc::new(Registry(log.clone())),
         broker: broker.clone(),
         delivery,
         runs: Arc::new(Runs(log.clone())),
@@ -579,6 +604,39 @@ async fn stop_reaches_broker_before_runtime() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn disabling_and_deleting_reach_registry_before_runtime() {
+    let s = setup();
+    for (method, uri) in [
+        (Method::POST, "/v1/agents/coder/disable"),
+        (Method::POST, "/v1/agents/coder/enable"),
+        (Method::DELETE, "/v1/agents/coder"),
+    ] {
+        let (status, _) = call(&s.app, method, uri, Some(OPERATOR), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{uri}");
+    }
+    assert_eq!(
+        *s.log.0.lock().unwrap(),
+        [
+            "disable @coder",
+            "abort @coder: the agent was disabled",
+            "enable @coder",
+            "deliver @coder",
+            "delete @coder",
+            "abort @coder: the agent was deleted",
+        ]
+    );
+    let (status, _) = call(
+        &s.app,
+        Method::POST,
+        "/v1/agents/coder/disable",
+        Some(AGENT),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

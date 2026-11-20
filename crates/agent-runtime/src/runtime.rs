@@ -1,6 +1,7 @@
 //! Following Broker's notifications and serving agents one Run at a time (D12, D30, D86).
 
 use crate::launcher::Launcher;
+use crate::run::Stop;
 use crate::store::RunStore;
 use async_trait::async_trait;
 use control_plane_common::broker::{InboxDelivery, Notifications};
@@ -73,7 +74,7 @@ pub(crate) struct Inner {
     /// Agents being served, each with the signal that new mail arrived.
     serving: Mutex<HashMap<Alias, Arc<Notify>>>,
     /// Runs in progress by agent, each with the signal to abort it (D27).
-    active: Mutex<HashMap<Alias, (ActiveRun, Arc<Notify>)>>,
+    active: Mutex<HashMap<Alias, (ActiveRun, Arc<Stop>)>>,
 }
 
 impl Runtime {
@@ -219,7 +220,7 @@ impl Inner {
         self.serving.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(crate) fn active(&self) -> MutexGuard<'_, HashMap<Alias, (ActiveRun, Arc<Notify>)>> {
+    pub(crate) fn active(&self) -> MutexGuard<'_, HashMap<Alias, (ActiveRun, Arc<Stop>)>> {
         self.active.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -242,8 +243,16 @@ impl RunControl for Runtime {
         require_operator(caller)?;
         for (run, stop) in self.inner.active().values() {
             if run.correlation_id == chain {
-                stop.notify_one();
+                stop.signal("the chain was stopped");
             }
+        }
+        Ok(())
+    }
+
+    async fn abort_agent(&self, caller: &Caller, agent: &Alias, reason: &str) -> Result<()> {
+        require_operator(caller)?;
+        if let Some((_, stop)) = self.inner.active().get(agent) {
+            stop.signal(reason);
         }
         Ok(())
     }

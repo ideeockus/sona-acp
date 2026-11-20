@@ -4,7 +4,7 @@ mod token;
 
 use async_trait::async_trait;
 use control_plane_common::registry::{
-    Agent, AgentCard, AgentDirectory, AgentRegistry, AgentVersion, Credentials, Secret,
+    Agent, AgentCard, AgentDirectory, AgentRegistry, AgentState, AgentVersion, Credentials, Secret,
 };
 use control_plane_common::{Alias, Caller, CorrelationId, Error, Result, RunId, Timestamp};
 use sqlx::{SqliteExecutor, SqlitePool};
@@ -26,15 +26,15 @@ impl SqliteRegistry {
     }
 
     async fn current(&self, alias: &Alias) -> Result<Agent> {
-        let row: Option<(String, i64)> = sqlx::query_as(
-            "SELECT card, version FROM principals WHERE alias = ? AND kind = 'agent'",
+        let row: Option<AgentRow> = sqlx::query_as(
+            "SELECT card, version, disabled FROM principals WHERE alias = ? AND kind = 'agent'",
         )
         .bind(alias.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        let (card, version) = row.ok_or_else(|| Error::NotFound(format!("agent {alias}")))?;
-        decode_agent(&card, version)
+        row.ok_or_else(|| Error::NotFound(format!("agent {alias}")))?
+            .into_agent()
     }
 
     async fn is_active(&self, credential: &str) -> Result<bool> {
@@ -71,15 +71,13 @@ impl AgentRegistry for SqliteRegistry {
 
     async fn list_agents(&self, caller: &Caller) -> Result<Vec<Agent>> {
         require_operator(caller)?;
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT card, version FROM principals WHERE kind = 'agent' ORDER BY alias",
+        let rows: Vec<AgentRow> = sqlx::query_as(
+            "SELECT card, version, disabled FROM principals WHERE kind = 'agent' ORDER BY alias",
         )
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        rows.iter()
-            .map(|(card, version)| decode_agent(card, *version))
-            .collect()
+        rows.into_iter().map(AgentRow::into_agent).collect()
     }
 
     async fn update_agent(&self, caller: &Caller, edit: Agent) -> Result<Agent> {
@@ -114,7 +112,11 @@ impl AgentRegistry for SqliteRegistry {
         }
         insert_version(&mut *tx, &alias, version, &json, caller.alias()).await?;
         tx.commit().await.map_err(internal)?;
-        Ok(Agent { card, version })
+        Ok(Agent {
+            card,
+            version,
+            state: current.state,
+        })
     }
 
     async fn agent_versions(&self, caller: &Caller, alias: &Alias) -> Result<Vec<AgentVersion>> {
@@ -139,6 +141,41 @@ impl AgentRegistry for SqliteRegistry {
             })
             .collect()
     }
+
+    async fn disable_agent(&self, caller: &Caller, alias: &Alias) -> Result<()> {
+        require_operator(caller)?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        set_disabled(&mut *tx, alias, true).await?;
+        // A Run going on cannot call the API any more, before Runtime aborts it.
+        revoke_tokens_of(&mut *tx, alias).await?;
+        tx.commit().await.map_err(internal)
+    }
+
+    async fn enable_agent(&self, caller: &Caller, alias: &Alias) -> Result<()> {
+        require_operator(caller)?;
+        set_disabled(&self.pool, alias, false).await
+    }
+
+    async fn delete_agent(&self, caller: &Caller, alias: &Alias) -> Result<()> {
+        require_operator(caller)?;
+        self.current(alias).await?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        revoke_tokens_of(&mut *tx, alias).await?;
+        for table in ["agent_versions", "principals"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE alias = ?"))
+                .bind(alias.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(internal)?;
+        }
+        sqlx::query("INSERT INTO retired_aliases (alias, retired_at) VALUES (?, ?)")
+            .bind(alias.as_str())
+            .bind(Timestamp::now().as_unix_millis())
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        tx.commit().await.map_err(internal)
+    }
 }
 
 #[async_trait]
@@ -147,7 +184,7 @@ impl AgentDirectory for SqliteRegistry {
         Ok(self.current(alias).await?.card)
     }
 
-    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent> {
+    async fn record(&self, alias: &Alias) -> Result<Agent> {
         self.current(alias).await
     }
 }
@@ -170,7 +207,9 @@ impl Credentials for SqliteRegistry {
         run_id: RunId,
         correlation_id: CorrelationId,
     ) -> Result<Secret> {
-        self.current(agent).await?;
+        if self.current(agent).await?.state == AgentState::Disabled {
+            return Err(Error::InvalidInput(format!("{agent} is disabled")));
+        }
         let secret = token::generate(RUN_PREFIX);
         store_credential(&self.pool, &secret, agent, Some((run_id, correlation_id))).await?;
         Ok(secret)
@@ -232,27 +271,59 @@ impl Credentials for SqliteRegistry {
     }
 }
 
+/// Takes the alias, unless a deleted agent had it (D96).
 async fn insert_principal(
     db: impl SqliteExecutor<'_>,
     alias: &Alias,
     kind: &str,
     card: Option<String>,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO principals (alias, kind, card) VALUES (?, ?, ?)")
+    let inserted = sqlx::query(
+        "INSERT INTO principals (alias, kind, card)
+         SELECT ?1, ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM retired_aliases WHERE alias = ?1)",
+    )
+    .bind(alias.as_str())
+    .bind(kind)
+    .bind(card)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        if e.as_database_error()
+            .is_some_and(|d| d.is_unique_violation())
+        {
+            Error::InvalidInput(format!("alias {alias} is taken"))
+        } else {
+            internal(e)
+        }
+    })?;
+    if inserted.rows_affected() == 0 {
+        return Err(Error::InvalidInput(format!(
+            "alias {alias} belonged to a deleted agent and stays taken"
+        )));
+    }
+    Ok(())
+}
+
+async fn set_disabled(db: impl SqliteExecutor<'_>, alias: &Alias, disabled: bool) -> Result<()> {
+    let updated =
+        sqlx::query("UPDATE principals SET disabled = ? WHERE alias = ? AND kind = 'agent'")
+            .bind(disabled)
+            .bind(alias.as_str())
+            .execute(db)
+            .await
+            .map_err(internal)?;
+    if updated.rows_affected() == 0 {
+        return Err(Error::NotFound(format!("agent {alias}")));
+    }
+    Ok(())
+}
+
+async fn revoke_tokens_of(db: impl SqliteExecutor<'_>, alias: &Alias) -> Result<()> {
+    sqlx::query("DELETE FROM credentials WHERE alias = ?")
         .bind(alias.as_str())
-        .bind(kind)
-        .bind(card)
         .execute(db)
         .await
-        .map_err(|e| {
-            if e.as_database_error()
-                .is_some_and(|d| d.is_unique_violation())
-            {
-                Error::InvalidInput(format!("alias {alias} is taken"))
-            } else {
-                internal(e)
-            }
-        })?;
+        .map_err(internal)?;
     Ok(())
 }
 
@@ -321,11 +392,25 @@ fn encode_card(card: &AgentCard) -> Result<String> {
     serde_json::to_string(card).map_err(|e| Error::Internal(e.to_string()))
 }
 
-fn decode_agent(card: &str, version: i64) -> Result<Agent> {
-    Ok(Agent {
-        card: decode_card(card)?,
-        version: to_version(version)?,
-    })
+#[derive(sqlx::FromRow)]
+struct AgentRow {
+    card: String,
+    version: i64,
+    disabled: i64,
+}
+
+impl AgentRow {
+    fn into_agent(self) -> Result<Agent> {
+        Ok(Agent {
+            card: decode_card(&self.card)?,
+            version: to_version(self.version)?,
+            state: if self.disabled == 0 {
+                AgentState::Active
+            } else {
+                AgentState::Disabled
+            },
+        })
+    }
 }
 
 fn to_version(version: i64) -> Result<u32> {

@@ -1,13 +1,13 @@
 use super::*;
 use control_plane_common::RunId;
-use control_plane_common::registry::{Agent, AgentCard, ModelRef, Secret};
+use control_plane_common::registry::{Agent, AgentCard, AgentState, ModelRef, Secret};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Mutex;
 
 const LEAKED: &str = "sona_plane_rt_leaked";
 
-/// Agents keyed by alias, each allowed to message the listed aliases.
-struct Directory(Vec<AgentCard>);
+/// Agents keyed by alias, each allowed to message the listed aliases; some disabled.
+struct Directory(Vec<AgentCard>, Mutex<Vec<Alias>>);
 
 #[async_trait]
 impl AgentDirectory for Directory {
@@ -19,9 +19,18 @@ impl AgentDirectory for Directory {
             .ok_or_else(|| Error::NotFound(format!("agent {alias}")))
     }
 
-    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent> {
+    async fn record(&self, alias: &Alias) -> Result<Agent> {
         let card = self.agent(alias).await?;
-        Ok(Agent { card, version: 1 })
+        let disabled = self.1.lock().unwrap().contains(alias);
+        Ok(Agent {
+            card,
+            version: 1,
+            state: if disabled {
+                AgentState::Disabled
+            } else {
+                AgentState::Active
+            },
+        })
     }
 }
 
@@ -64,6 +73,7 @@ impl JournalWriter for Recorded {
 
 struct Setup {
     broker: SqliteBroker,
+    directory: Arc<Directory>,
     journal: Arc<Recorded>,
     subscription: Mutex<Notifications>,
 }
@@ -105,14 +115,17 @@ async fn setup() -> Setup {
         .connect_with(SqliteConnectOptions::new().in_memory(true))
         .await
         .unwrap();
-    let directory = Directory(vec![
-        card("manager", &["coder"]),
-        card("coder", &["manager", "user"]),
-    ]);
+    let directory = Arc::new(Directory(
+        vec![
+            card("manager", &["coder"]),
+            card("coder", &["manager", "user"]),
+        ],
+        Mutex::default(),
+    ));
     let journal = Arc::new(Recorded::default());
     let broker = SqliteBroker::new(
         pool,
-        Arc::new(directory),
+        directory.clone(),
         Arc::new(OneActiveToken),
         journal.clone(),
     )
@@ -121,6 +134,7 @@ async fn setup() -> Setup {
     let subscription = Mutex::new(broker.subscribe());
     Setup {
         broker,
+        directory,
         journal,
         subscription,
     }
@@ -784,4 +798,49 @@ async fn a_halted_chain_keeps_its_reason_and_resume_restarts_its_count() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn a_disabled_agent_takes_no_mail_and_gets_the_waiting_mail_once_enabled() {
+    let s = setup().await;
+    let coder = alias("coder");
+    let waiting = s
+        .broker
+        .send(&operator(), to("coder", "before", None))
+        .await
+        .unwrap();
+    s.directory.1.lock().unwrap().push(coder.clone());
+
+    // Nobody may write to it, the operator included, and each refusal is journaled.
+    let chain = CorrelationId::new();
+    for caller in [operator(), agent("manager", chain)] {
+        let refused = s.broker.send(&caller, to("coder", "more", None)).await;
+        assert!(matches!(refused, Err(Error::Forbidden(r)) if r == "@coder is disabled"));
+    }
+    assert_eq!(
+        s.journal
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.decision.is_some())
+            .count(),
+        2
+    );
+    // What waits is kept but delivered to nobody.
+    assert!(s.broker.next_batch(&coder).await.unwrap().is_none());
+    assert!(s.broker.agents_with_unread().await.unwrap().is_empty());
+
+    s.directory.1.lock().unwrap().clear();
+    s.notified();
+    s.broker.deliver_pending(&operator(), &coder).await.unwrap();
+    assert_eq!(s.notified(), std::slice::from_ref(&coder));
+    let batch = s.broker.next_batch(&coder).await.unwrap().unwrap();
+    assert_eq!(batch.messages[0].id, waiting.id);
+    assert!(matches!(
+        s.broker
+            .deliver_pending(&agent("coder", chain), &coder)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
 }

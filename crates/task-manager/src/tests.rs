@@ -29,9 +29,13 @@ impl AgentDirectory for Directory {
         })
     }
 
-    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent> {
+    async fn record(&self, alias: &Alias) -> Result<Agent> {
         let card = self.agent(alias).await?;
-        Ok(Agent { card, version: 1 })
+        Ok(Agent {
+            card,
+            version: 1,
+            state: Default::default(),
+        })
     }
 }
 

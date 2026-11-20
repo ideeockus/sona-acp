@@ -7,14 +7,14 @@ use crate::runtime::Inner;
 use control_plane_common::broker::{InboxBatch, Message};
 use control_plane_common::journal::{Component, Event as JournalEvent, Outcome};
 use control_plane_common::layout::{EXTENSION_DIR, PI_DIR, SESSIONS_DIR, WORKDIR};
-use control_plane_common::registry::{AgentCard, Secret};
+use control_plane_common::registry::{AgentCard, AgentState, Secret};
 use control_plane_common::runtime::{ActiveRun, RunOutcome, RunRecord, Usage};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId, Timestamp,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Notify;
 
@@ -25,8 +25,26 @@ type Events = EventReader<Box<dyn AsyncRead + Send + Unpin>>;
 enum Ended {
     /// It settled; the newest message it was told about.
     Settled(MessageId),
-    /// The operator stopped the chain and Pi was aborted (D27).
+    /// Pi was aborted, for the reason given to the stop (D27, D101).
     Stopped,
+}
+
+/// The signal to abort a Run, with why. The first reason given wins.
+#[derive(Default)]
+pub(crate) struct Stop {
+    notify: Notify,
+    reason: OnceLock<String>,
+}
+
+impl Stop {
+    pub(crate) fn signal(&self, reason: &str) {
+        let _ = self.reason.set(reason.to_owned());
+        self.notify.notify_one();
+    }
+
+    fn reason(&self) -> &str {
+        self.reason.get().map_or("stopped", String::as_str)
+    }
 }
 
 /// What one Run is about.
@@ -63,7 +81,12 @@ impl Inner {
             .first()
             .map(|m| m.correlation_id)
             .ok_or_else(|| Error::Internal("empty batch".to_owned()))?;
-        let current = self.directory.versioned_agent(agent).await?;
+        let current = match self.directory.record(agent).await {
+            Ok(current) if current.state == AgentState::Active => current,
+            // Disabled or deleted since Broker gave the batch: nothing to run (D96).
+            Ok(_) | Err(Error::NotFound(_)) => return Ok(()),
+            Err(error) => return Err(error),
+        };
         let run = Run {
             caller: Caller::Agent {
                 alias: agent.clone(),
@@ -78,9 +101,9 @@ impl Inner {
             dir: self.config.data_dir.join("runs").join(run_id.to_string()),
         };
 
-        // Visible to `abort_chain` before checking the chain: the operator stops it in
-        // Broker first, so either this check or the abort catches the Run (D27).
-        let stop = Arc::new(Notify::new());
+        // Visible to the aborts before checking the chain and the agent: the operator
+        // changes them first, so either this check or the abort catches the Run (D27).
+        let stop = Arc::new(Stop::default());
         let active = ActiveRun {
             agent: agent.clone(),
             run_id,
@@ -106,14 +129,15 @@ impl Inner {
                     .await
             }
             Ok(Some(Ended::Stopped)) => {
-                let reason = "the chain was stopped";
+                let reason = stop.reason();
                 self.runs
                     .finish(run_id, RunOutcome::Stopped, Some(reason))
                     .await?;
                 self.record(&run, "run_finished", None, Some(reason.to_owned()))
                     .await
             }
-            // The chain was stopped, or a safeguard stopped it now: nothing happened.
+            // The chain or the agent was stopped, or a safeguard stopped the chain now:
+            // nothing happened.
             Ok(None) => Ok(()),
             Err(error) => {
                 let reason = error.to_string();
@@ -133,6 +157,11 @@ impl Inner {
     async fn admit(&self, run: &Run) -> Result<bool> {
         if self.inbox.is_stopped(run.correlation_id).await? {
             return Ok(false);
+        }
+        match self.directory.record(run.caller.alias()).await {
+            Ok(agent) if agent.state == AgentState::Active => {}
+            Ok(_) | Err(Error::NotFound(_)) => return Ok(false),
+            Err(error) => return Err(error),
         }
         let Some(reason) = self.tripped(run).await? else {
             return Ok(true);
@@ -176,7 +205,7 @@ impl Inner {
     }
 
     /// Records the start, issues the token and runs Pi; the token dies with the Run.
-    async fn issue_and_drive(&self, run: &Run, wake: &Notify, stop: &Notify) -> Result<Ended> {
+    async fn issue_and_drive(&self, run: &Run, wake: &Notify, stop: &Stop) -> Result<Ended> {
         let agent = run.caller.alias();
         self.runs
             .begin(&RunRecord {
@@ -207,13 +236,7 @@ impl Inner {
     }
 
     /// Starts Pi and talks to it.
-    async fn drive(
-        &self,
-        run: &Run,
-        token: &Secret,
-        wake: &Notify,
-        stop: &Notify,
-    ) -> Result<Ended> {
+    async fn drive(&self, run: &Run, token: &Secret, wake: &Notify, stop: &Stop) -> Result<Ended> {
         let agent_dir = self
             .config
             .data_dir
@@ -283,7 +306,7 @@ impl Inner {
         commands: &mut Commands,
         events: &mut Events,
         wake: &Notify,
-        stop: &Notify,
+        stop: &Stop,
     ) -> Result<Ended> {
         let messages = &run.batch.messages;
         commands
@@ -334,7 +357,7 @@ impl Inner {
                     Some(_) => {}
                     None => return Err(Error::Internal("Pi exited before settling".to_owned())),
                 },
-                () = stop.notified(), if !stopping => {
+                () = stop.notify.notified(), if !stopping => {
                     stopping = true;
                     if working {
                         commands.send(&Command::Abort).await?;

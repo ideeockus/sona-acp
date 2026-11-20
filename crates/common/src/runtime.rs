@@ -75,6 +75,10 @@ pub trait RunControl: Send + Sync {
     /// nothing starts it again.
     async fn abort_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()>;
 
+    /// Aborts the agent's Run, as when it is disabled or deleted (D101). The Run is
+    /// kept as stopped with `reason`. Operator only.
+    async fn abort_agent(&self, caller: &Caller, agent: &Alias, reason: &str) -> Result<()>;
+
     /// The newest Runs that match, at most a hundred. The operator only.
     async fn runs(&self, caller: &Caller, filter: RunFilter) -> Result<Vec<RunRecord>>;
 

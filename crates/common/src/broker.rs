@@ -165,6 +165,9 @@ pub trait DeliveryControl: Send + Sync {
     async fn resume_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()>;
 
     async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<StoppedChain>>;
+
+    /// Wakes the agent if it has mail, as after it was enabled again (D96).
+    async fn deliver_pending(&self, caller: &Caller, agent: &Alias) -> Result<()>;
 }
 
 #[cfg(test)]

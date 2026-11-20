@@ -96,6 +96,19 @@ enum AgentsCommand {
     Versions {
         alias: Alias,
     },
+    /// Stops waking the agent and aborts its Run; its mail waits (D96).
+    Disable {
+        alias: Alias,
+    },
+    /// Wakes the agent again with the mail that waited.
+    Enable {
+        alias: Alias,
+    },
+    /// Removes the agent for good. Its history stays, and its alias is never given
+    /// again (D96).
+    Delete {
+        alias: Alias,
+    },
 }
 
 #[derive(Subcommand)]
@@ -199,6 +212,21 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         Command::Agents(AgentsCommand::Versions { alias }) => (
             Method::GET,
             format!("/v1/agents/{}/versions", alias.as_str()),
+            None,
+        ),
+        Command::Agents(AgentsCommand::Disable { alias }) => (
+            Method::POST,
+            format!("/v1/agents/{}/disable", alias.as_str()),
+            None,
+        ),
+        Command::Agents(AgentsCommand::Enable { alias }) => (
+            Method::POST,
+            format!("/v1/agents/{}/enable", alias.as_str()),
+            None,
+        ),
+        Command::Agents(AgentsCommand::Delete { alias }) => (
+            Method::DELETE,
+            format!("/v1/agents/{}", alias.as_str()),
             None,
         ),
         Command::Send {
@@ -422,6 +450,22 @@ mod tests {
         assert_eq!((&body["version"], &body["hue"]), (&json!(3), &json!(25)));
         let (_, path, _) = request_of(&["agents", "versions", "coder"]);
         assert_eq!(path, "/v1/agents/coder/versions");
+    }
+
+    #[test]
+    fn agents_are_disabled_enabled_and_deleted_by_alias() {
+        let (method, path, _) = request_of(&["agents", "disable", "coder"]);
+        assert_eq!(
+            (method, path.as_str()),
+            (Method::POST, "/v1/agents/coder/disable")
+        );
+        let (_, path, _) = request_of(&["agents", "enable", "coder"]);
+        assert_eq!(path, "/v1/agents/coder/enable");
+        let (method, path, _) = request_of(&["agents", "delete", "coder"]);
+        assert_eq!(
+            (method, path.as_str()),
+            (Method::DELETE, "/v1/agents/coder")
+        );
     }
 
     #[test]

@@ -44,7 +44,12 @@ pub fn router(services: Services) -> Router {
         .route("/v1/tasks/{id}", get(get_task).patch(update_task))
         .route("/v1/gateway/check", post(check_tool))
         .route("/v1/agents", post(create_agent).get(list_agents))
-        .route("/v1/agents/{alias}", get(get_agent).put(update_agent))
+        .route(
+            "/v1/agents/{alias}",
+            get(get_agent).put(update_agent).delete(delete_agent),
+        )
+        .route("/v1/agents/{alias}/disable", post(disable_agent))
+        .route("/v1/agents/{alias}/enable", post(enable_agent))
         .route("/v1/agents/{alias}/versions", get(agent_versions))
         .route("/v1/agents/{alias}/sessions/{session}/retry", post(retry))
         .route("/v1/agents/{alias}/sessions/{session}/skip", post(skip))
@@ -168,6 +173,45 @@ async fn update_agent(
     Ok(Json(s.registry.update_agent(&caller, edit).await?))
 }
 
+/// Registry first, so no new Run starts; then the running one is aborted (D101).
+async fn disable_agent(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let alias: Alias = parse(&alias)?;
+    s.registry.disable_agent(&caller, &alias).await?;
+    s.runs
+        .abort_agent(&caller, &alias, "the agent was disabled")
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The agent gets the mail that waited while it was disabled.
+async fn enable_agent(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let alias: Alias = parse(&alias)?;
+    s.registry.enable_agent(&caller, &alias).await?;
+    s.delivery.deliver_pending(&caller, &alias).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_agent(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let alias: Alias = parse(&alias)?;
+    s.registry.delete_agent(&caller, &alias).await?;
+    s.runs
+        .abort_agent(&caller, &alias, "the agent was deleted")
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn agent_versions(
     State(s): Shared,
     Authenticated(caller): Authenticated,
@@ -222,12 +266,11 @@ async fn resume_chain(
 /// Every agent with its Run, unread mail and failing sessions (D77), and the
 /// stopped chains (D27).
 async fn status(State(s): Shared, Authenticated(caller): Authenticated) -> Reply<Status> {
-    let cards = s.registry.list_agents(&caller).await?;
-    let cards = cards.into_iter().map(|agent| agent.card).collect();
+    let agents = s.registry.list_agents(&caller).await?;
     let inboxes = s.delivery.inbox_status(&caller).await?;
     let runs = s.runs.active_runs(&caller).await?;
     Ok(Json(Status {
-        agents: AgentStatus::of(cards, inboxes, runs),
+        agents: AgentStatus::of(agents, inboxes, runs),
         stopped_chains: s.delivery.stopped_chains(&caller).await?,
     }))
 }

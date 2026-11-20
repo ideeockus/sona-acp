@@ -6,7 +6,7 @@ use control_plane_common::broker::{
     MessageBroker, NewMessage, Notifications, StoppedChain,
 };
 use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
-use control_plane_common::registry::{AgentDirectory, Credentials};
+use control_plane_common::registry::{AgentDirectory, AgentState, Credentials};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, SessionKey, TaskId, Timestamp,
 };
@@ -103,6 +103,16 @@ impl SqliteBroker {
         parse(&found)
     }
 
+    /// Whether the recipient is an agent that may be woken: not the operator, not a
+    /// disabled or deleted agent (D96).
+    async fn works(&self, recipient: &Alias) -> Result<bool> {
+        match self.directory.record(recipient).await {
+            Ok(agent) => Ok(agent.state == AgentState::Active),
+            Err(Error::NotFound(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Unread messages of a recipient that may be delivered: none of stopped chains (D27).
     async fn deliverable(&self, recipient: &Alias) -> Result<Vec<Message>> {
         let stopped = self.stopped().await?;
@@ -145,6 +155,15 @@ impl MessageBroker for SqliteBroker {
                 self.deny(caller, message.task_id, reason).await?;
             }
             return Err(error);
+        }
+
+        // A disabled agent takes no messages, not even from the operator (D96).
+        if let Ok(recipient) = self.directory.record(&message.to).await
+            && recipient.state == AgentState::Disabled
+        {
+            let reason = format!("{} is disabled", message.to);
+            self.deny(caller, message.task_id, &reason).await?;
+            return Err(Error::Forbidden(reason));
         }
 
         // A stopped chain takes nothing more from its agents (D27). The operator may still
@@ -240,7 +259,7 @@ impl InboxDelivery for SqliteBroker {
         let mut agents = Vec::new();
         for recipient in recipients {
             let alias: Alias = parse(&recipient)?;
-            if self.directory.agent(&alias).await.is_ok() {
+            if self.works(&alias).await? {
                 agents.push(alias);
             }
         }
@@ -248,6 +267,9 @@ impl InboxDelivery for SqliteBroker {
     }
 
     async fn next_batch(&self, agent: &Alias) -> Result<Option<InboxBatch>> {
+        if !self.works(agent).await? {
+            return Ok(None);
+        }
         let stuck: Vec<String> =
             sqlx::query_scalar("SELECT session FROM failures WHERE recipient = ? AND stuck = 1")
                 .bind(agent.as_str())
@@ -483,7 +505,7 @@ impl DeliveryControl for SqliteBroker {
         .map_err(internal)?;
         for recipient in recipients {
             let alias: Alias = parse(&recipient)?;
-            if self.directory.agent(&alias).await.is_ok() {
+            if self.works(&alias).await? {
                 let _ = self.notifications.send(alias);
             }
         }
@@ -507,6 +529,14 @@ impl DeliveryControl for SqliteBroker {
                 })
             })
             .collect()
+    }
+
+    async fn deliver_pending(&self, caller: &Caller, agent: &Alias) -> Result<()> {
+        require_operator(caller)?;
+        if self.next_batch(agent).await?.is_some() {
+            let _ = self.notifications.send(agent.clone());
+        }
+        Ok(())
     }
 }
 

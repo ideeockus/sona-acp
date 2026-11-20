@@ -6,7 +6,7 @@ use control_plane_agent_runtime::{Limits, Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{
-    Access, Agent, AgentCard, AgentDirectory, Credentials, ModelRef, Secret,
+    Access, Agent, AgentCard, AgentDirectory, AgentState, Credentials, ModelRef, Secret,
 };
 use control_plane_common::runtime::{RunControl, RunFilter, RunOutcome, Usage};
 use control_plane_common::{
@@ -24,7 +24,9 @@ use tokio::sync::{Notify, broadcast, oneshot};
 
 // ---- Registry ----
 
-struct Directory;
+/// `coder` and `manager`; the disabled set is shared with the inbox, as Registry is
+/// with Broker.
+struct Directory(Arc<Mutex<HashSet<Alias>>>);
 
 #[async_trait]
 impl AgentDirectory for Directory {
@@ -48,9 +50,18 @@ impl AgentDirectory for Directory {
         })
     }
 
-    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent> {
+    async fn record(&self, alias: &Alias) -> Result<Agent> {
         let card = self.agent(alias).await?;
-        Ok(Agent { card, version: 7 })
+        let disabled = self.0.lock().unwrap().contains(alias);
+        Ok(Agent {
+            card,
+            version: 7,
+            state: if disabled {
+                AgentState::Disabled
+            } else {
+                AgentState::Active
+            },
+        })
     }
 }
 
@@ -99,6 +110,8 @@ struct Inbox {
     /// Why the system halted a chain (D100).
     halted: Mutex<HashMap<CorrelationId, String>>,
     resumed: Mutex<HashMap<CorrelationId, Timestamp>>,
+    /// Disabled agents get nothing, as from Broker (D96).
+    disabled: Arc<Mutex<HashSet<Alias>>>,
     notifications: broadcast::Sender<Alias>,
 }
 
@@ -112,6 +125,7 @@ impl Default for Inbox {
             stopped: Mutex::default(),
             halted: Mutex::default(),
             resumed: Mutex::default(),
+            disabled: Arc::default(),
             notifications: broadcast::channel(16).0,
         }
     }
@@ -170,6 +184,9 @@ impl InboxDelivery for Inbox {
     }
 
     async fn next_batch(&self, agent: &Alias) -> Result<Option<InboxBatch>> {
+        if self.disabled.lock().unwrap().contains(agent) {
+            return Ok(None);
+        }
         let mut unread = self.unread(agent);
         let stuck = self.stuck.lock().unwrap().clone();
         let stopped = self.stopped.lock().unwrap().clone();
@@ -439,7 +456,7 @@ async fn setup_with(pool: SqlitePool, scripts: Vec<Script>, limits: Limits) -> S
     let runtime = Runtime::new(
         config,
         pool,
-        Arc::new(Directory),
+        Arc::new(Directory(inbox.disabled.clone())),
         tokens.clone(),
         inbox.clone(),
         journal.clone(),
@@ -876,7 +893,7 @@ async fn relative_paths_are_refused() {
     let result = Runtime::new(
         config,
         memory_pool().await,
-        Arc::new(Directory),
+        Arc::new(Directory(Arc::default())),
         Arc::new(Tokens::default()),
         Arc::new(Inbox::default()),
         Arc::new(Journal::default()),
@@ -1077,4 +1094,40 @@ async fn an_agent_waking_too_often_halts_the_chain_that_wakes_it() {
     assert_eq!(reason, "@coder reached its limit of 2 wakes in 10 minutes");
     // Other agents are counted on their own.
     deliver(&s, &message("manager", None, CorrelationId::new())).await;
+}
+
+#[tokio::test]
+async fn disabling_an_agent_aborts_its_run_and_its_mail_waits() {
+    let s = setup(vec![Script::UntilAbort, Script::Settle]).await;
+    let first = message("coder", None, CorrelationId::new());
+    s.inbox.add(first.clone());
+    s.runtime.start().await.unwrap();
+    eventually("run started", || s.pi.specs.lock().unwrap().len() == 1).await;
+
+    // Registry first, then Runtime, as the API does.
+    s.inbox.disabled.lock().unwrap().insert(alias_of("coder"));
+    s.runtime
+        .abort_agent(&operator(), &alias_of("coder"), "the agent was disabled")
+        .await
+        .unwrap();
+    eventually("run finished", || {
+        s.journal.actions().iter().any(|(a, _)| a == "run_finished")
+    })
+    .await;
+    let runs = s
+        .runtime
+        .runs(&operator(), RunFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(runs[0].outcome, RunOutcome::Stopped);
+    assert_eq!(runs[0].reason.as_deref(), Some("the agent was disabled"));
+    assert!(s.inbox.failures.lock().unwrap().is_empty());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(s.pi.specs.lock().unwrap().len(), 1);
+    assert!(!s.inbox.is_read(&first));
+
+    // Enabled again, the agent gets what waited.
+    s.inbox.disabled.lock().unwrap().clear();
+    let _ = s.inbox.notifications.send(alias_of("coder"));
+    eventually("message read", || s.inbox.is_read(&first)).await;
 }

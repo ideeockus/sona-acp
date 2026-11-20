@@ -1,6 +1,7 @@
 //! `sapctl status` for a human: agents, their Runs and failing sessions (D77).
 
 use control_plane_common::Timestamp;
+use control_plane_common::registry::AgentState;
 use control_plane_common::status::Status;
 
 pub fn render(status: &Status, now: Timestamp) -> String {
@@ -18,7 +19,13 @@ pub fn render(status: &Status, now: Timestamp) -> String {
                 since(run.started_at, now),
                 unread,
             ],
-            None => row([agent.alias.as_str(), "idle", "-", "-", "-", &unread]),
+            None => {
+                let state = match agent.state {
+                    AgentState::Active => "idle",
+                    AgentState::Disabled => "disabled",
+                };
+                row([agent.alias.as_str(), state, "-", "-", "-", &unread])
+            }
         });
     }
     let mut out = table(rows);
@@ -121,6 +128,7 @@ mod tests {
             AgentStatus {
                 alias: "coder".parse().unwrap(),
                 title: String::new(),
+                state: AgentState::Active,
                 run: Some(ActiveRun {
                     agent: "coder".parse().unwrap(),
                     run_id,
@@ -134,6 +142,7 @@ mod tests {
             AgentStatus {
                 alias: "manager".parse().unwrap(),
                 title: String::new(),
+                state: AgentState::Disabled,
                 run: None,
                 unread: 0,
                 failing: vec![FailingSession {
@@ -155,9 +164,9 @@ mod tests {
         };
         let out = render(&status, at(150_000));
         let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].starts_with("AGENT    STATE    RUN"));
-        assert!(lines[1].starts_with(&format!("coder    running  {run_id}  {session}  2m")));
-        assert!(lines[2].starts_with("manager  idle"));
+        assert!(lines[0].starts_with("AGENT    STATE     RUN"));
+        assert!(lines[1].starts_with(&format!("coder    running   {run_id}  {session}  2m")));
+        assert!(lines[2].starts_with("manager  disabled  -"));
         assert!(out.contains("3         stuck  Pi exited"));
         assert!(out.contains(&format!("sapctl retry manager {session}")));
         assert!(out.contains(&format!(

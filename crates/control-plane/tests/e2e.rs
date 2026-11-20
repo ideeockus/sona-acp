@@ -124,7 +124,7 @@ async fn an_agent_answers_the_operator_past_gateway() {
     let status = operator.call("GET", "/v1/status", None).await;
     assert_eq!(
         status,
-        json!({ "agents": [{ "alias": "coder", "title": "Writes code", "run": null,
+        json!({ "agents": [{ "alias": "coder", "title": "Writes code", "state": "active", "run": null,
                              "unread": 0, "failing": [] }],
                 "stopped_chains": [] })
     );
@@ -140,6 +140,18 @@ async fn an_agent_answers_the_operator_past_gateway() {
         .try_call("PUT", "/v1/agents/coder", Some(agent))
         .await;
     assert!(stale.unwrap_err().starts_with("409"));
+
+    // A disabled agent takes no messages until enabled.
+    operator
+        .call("POST", "/v1/agents/coder/disable", None)
+        .await;
+    let message = json!({ "to": "coder", "body": "hi", "subject": null,
+                          "task_id": null, "in_reply_to": null });
+    let refused = operator
+        .try_call("POST", "/v1/messages", Some(message))
+        .await;
+    assert!(refused.unwrap_err().starts_with("403"));
+    operator.call("POST", "/v1/agents/coder/enable", None).await;
 
     // The model saw why the read was refused.
     let requests = model.requests.lock().unwrap();

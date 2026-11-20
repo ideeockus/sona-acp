@@ -1,5 +1,5 @@
 use super::*;
-use control_plane_common::registry::{Access, ModelRef, default_hue};
+use control_plane_common::registry::{Access, AgentState, ModelRef, default_hue};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 async fn memory_pool() -> SqlitePool {
@@ -325,10 +325,7 @@ async fn an_edit_saves_the_next_version_and_keeps_the_previous() {
         .unwrap();
     assert_eq!(saved.version, 2);
     assert_eq!(registry.agent(&alias("coder")).await.unwrap(), saved.card);
-    assert_eq!(
-        registry.versioned_agent(&alias("coder")).await.unwrap(),
-        saved
-    );
+    assert_eq!(registry.record(&alias("coder")).await.unwrap(), saved);
 
     let versions = registry
         .agent_versions(&operator(), &alias("coder"))
@@ -400,9 +397,88 @@ async fn only_the_operator_edits_and_unknown_agents_are_not_found() {
     let ghost = Agent {
         card: card("ghost"),
         version: 1,
+        state: AgentState::Active,
     };
     assert!(matches!(
         registry.update_agent(&operator(), ghost).await,
         Err(Error::NotFound(_))
     ));
+}
+
+#[tokio::test]
+async fn a_disabled_agent_loses_its_run_tokens_until_enabled() {
+    let registry = registry_with_coder().await;
+    let coder = alias("coder");
+    let token = registry
+        .issue_run_token(&coder, RunId::new(), CorrelationId::new())
+        .await
+        .unwrap();
+
+    registry.disable_agent(&operator(), &coder).await.unwrap();
+    let record = registry.record(&coder).await.unwrap();
+    assert_eq!(record.state, AgentState::Disabled);
+    assert!(matches!(
+        registry.authenticate(token.expose()).await,
+        Err(Error::Unauthenticated)
+    ));
+    assert!(matches!(
+        registry
+            .issue_run_token(&coder, RunId::new(), CorrelationId::new())
+            .await,
+        Err(Error::InvalidInput(_))
+    ));
+
+    registry.enable_agent(&operator(), &coder).await.unwrap();
+    assert_eq!(
+        registry.record(&coder).await.unwrap().state,
+        AgentState::Active
+    );
+    assert!(matches!(
+        registry.disable_agent(&operator(), &alias("ghost")).await,
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_deleted_agent_is_gone_but_its_alias_stays_taken() {
+    let registry = registry_with_coder().await;
+    let coder = alias("coder");
+    registry.delete_agent(&operator(), &coder).await.unwrap();
+
+    assert!(matches!(
+        registry.agent(&coder).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        registry.agent_versions(&operator(), &coder).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(registry.list_agents(&operator()).await.unwrap().is_empty());
+    let Err(Error::InvalidInput(reason)) = registry.create_agent(&operator(), card("coder")).await
+    else {
+        panic!("a deleted agent's alias was given again");
+    };
+    assert!(reason.contains("deleted"), "{reason}");
+    assert!(matches!(
+        registry.delete_agent(&operator(), &coder).await,
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn only_the_operator_disables_and_deletes() {
+    let registry = registry_with_coder().await;
+    let agent = Caller::Agent {
+        alias: alias("coder"),
+        run_id: RunId::new(),
+        correlation_id: CorrelationId::new(),
+    };
+    let coder = alias("coder");
+    for denied in [
+        registry.disable_agent(&agent, &coder).await,
+        registry.enable_agent(&agent, &coder).await,
+        registry.delete_agent(&agent, &coder).await,
+    ] {
+        assert!(matches!(denied, Err(Error::Forbidden(_))));
+    }
 }
