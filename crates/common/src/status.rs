@@ -1,16 +1,16 @@
 //! The operator's view of every agent at once (D77).
 
-use crate::broker::{FailingSession, InboxStatus};
+use crate::Alias;
+use crate::broker::{FailingSession, InboxStatus, StoppedChain};
 use crate::registry::AgentCard;
 use crate::runtime::ActiveRun;
-use crate::{Alias, CorrelationId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     pub agents: Vec<AgentStatus>,
-    /// Chains the operator stopped (D27).
-    pub stopped_chains: Vec<CorrelationId>,
+    /// Chains that deliver nothing until resumed (D27, D100).
+    pub stopped_chains: Vec<StoppedChain>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

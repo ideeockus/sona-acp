@@ -85,9 +85,9 @@ impl Inner {
             started_at: Timestamp::now(),
         };
         self.active().insert(agent.clone(), (active, stop.clone()));
-        let outcome = match self.inbox.is_stopped(correlation_id).await {
-            Ok(false) => self.issue_and_drive(&run, wake, &stop).await.map(Some),
-            Ok(true) => Ok(None),
+        let outcome = match self.admit(&run).await {
+            Ok(true) => self.issue_and_drive(&run, wake, &stop).await.map(Some),
+            Ok(false) => Ok(None),
             Err(error) => Err(error),
         };
         self.active().remove(agent);
@@ -109,7 +109,7 @@ impl Inner {
                 self.record(&run, "run_finished", None, Some(reason.to_owned()))
                     .await
             }
-            // The chain was stopped before the Run began: nothing happened.
+            // The chain was stopped, or a safeguard stopped it now: nothing happened.
             Ok(None) => Ok(()),
             Err(error) => {
                 let reason = error.to_string();
@@ -122,6 +122,53 @@ impl Inner {
                 Err(error)
             }
         }
+    }
+
+    /// Whether the chain may take the Run: it is not stopped, and no safeguard trips.
+    /// A trip stops the chain until the operator resumes it (D100).
+    async fn admit(&self, run: &Run) -> Result<bool> {
+        if self.inbox.is_stopped(run.correlation_id).await? {
+            return Ok(false);
+        }
+        let Some(reason) = self.tripped(run).await? else {
+            return Ok(true);
+        };
+        self.inbox.halt_chain(run.correlation_id, &reason).await?;
+        self.record(run, "chain_halted", None, Some(reason)).await?;
+        Ok(false)
+    }
+
+    /// The safeguard this Run would break, if any (D100).
+    async fn tripped(&self, run: &Run) -> Result<Option<String>> {
+        let limits = &self.config.limits;
+        let since = self.inbox.resumed_at(run.correlation_id).await?;
+        let (runs, cost) = self.runs.chain_spent(run.correlation_id, since).await?;
+        if runs >= limits.runs_per_chain {
+            return Ok(Some(format!(
+                "the chain reached its limit of {} Runs",
+                limits.runs_per_chain
+            )));
+        }
+        if cost >= limits.cost_per_chain_micros {
+            return Ok(Some(format!(
+                "the chain reached its limit of {} (spent {})",
+                dollars(limits.cost_per_chain_micros),
+                dollars(cost)
+            )));
+        }
+        let window = i64::try_from(limits.wake_window.as_millis())
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        let window_start = Timestamp::from_unix_millis(Timestamp::now().as_unix_millis() - window)?;
+        let agent = run.caller.alias();
+        let wakes = self.runs.started_since(agent, window_start).await?;
+        if wakes >= limits.wakes_per_window {
+            return Ok(Some(format!(
+                "{agent} reached its limit of {} wakes in {} minutes",
+                limits.wakes_per_window,
+                limits.wake_window.as_secs() / 60
+            )));
+        }
+        Ok(None)
     }
 
     /// Records the start, issues the token and runs Pi; the token dies with the Run.
@@ -385,6 +432,10 @@ impl Inner {
             })
             .await
     }
+}
+
+fn dollars(micros: u64) -> String {
+    format!("${:.2}", micros as f64 / 1e6)
 }
 
 fn newest(messages: &[Message]) -> Result<MessageId> {

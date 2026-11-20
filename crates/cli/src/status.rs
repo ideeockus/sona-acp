@@ -55,8 +55,13 @@ pub fn render(status: &Status, now: Timestamp) -> String {
 
     if !status.stopped_chains.is_empty() {
         out.push_str("\nSTOPPED CHAIN\n");
-        for chain in &status.stopped_chains {
-            out.push_str(&format!("{chain}  sapctl resume {chain}\n"));
+        for stopped in &status.stopped_chains {
+            let chain = stopped.chain;
+            let why = stopped
+                .reason
+                .as_deref()
+                .unwrap_or("stopped by the operator");
+            out.push_str(&format!("{chain}  {why}\n  sapctl resume {chain}\n"));
         }
     }
     out
@@ -99,7 +104,7 @@ fn since(then: Timestamp, now: Timestamp) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use control_plane_common::broker::FailingSession;
+    use control_plane_common::broker::{FailingSession, StoppedChain};
     use control_plane_common::runtime::ActiveRun;
     use control_plane_common::status::AgentStatus;
     use control_plane_common::{CorrelationId, RunId, SessionKey};
@@ -142,7 +147,11 @@ mod tests {
         let stopped = CorrelationId::new();
         let status = Status {
             agents,
-            stopped_chains: vec![stopped],
+            stopped_chains: vec![StoppedChain {
+                chain: stopped,
+                stopped_at: at(0),
+                reason: Some("the chain reached its limit of 30 Runs".to_owned()),
+            }],
         };
         let out = render(&status, at(150_000));
         let lines: Vec<&str> = out.lines().collect();
@@ -151,7 +160,9 @@ mod tests {
         assert!(lines[2].starts_with("manager  idle"));
         assert!(out.contains("3         stuck  Pi exited"));
         assert!(out.contains(&format!("sapctl retry manager {session}")));
-        assert!(out.contains(&format!("{stopped}  sapctl resume {stopped}")));
+        assert!(out.contains(&format!(
+            "{stopped}  the chain reached its limit of 30 Runs\n  sapctl resume {stopped}"
+        )));
     }
 
     #[test]

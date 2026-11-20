@@ -11,4 +11,4 @@ mod run;
 mod runtime;
 mod store;
 
-pub use runtime::{Runtime, RuntimeConfig};
+pub use runtime::{Limits, Runtime, RuntimeConfig};

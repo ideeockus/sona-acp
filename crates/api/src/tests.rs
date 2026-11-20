@@ -2,7 +2,7 @@ use super::*;
 use async_trait::async_trait;
 use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
-use control_plane_common::broker::InboxStatus;
+use control_plane_common::broker::{InboxStatus, StoppedChain};
 use control_plane_common::registry::Secret;
 use control_plane_common::runtime::{ActiveRun, RunFilter, RunRecord};
 use control_plane_common::{Caller, MessageId, Result, Timestamp};
@@ -200,9 +200,17 @@ impl DeliveryControl for Delivery {
         self.stopped.lock().unwrap().retain(|c| *c != chain);
         Ok(())
     }
-    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<CorrelationId>> {
+    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<StoppedChain>> {
         operator_only(caller)?;
-        Ok(self.stopped.lock().unwrap().clone())
+        let stopped = self.stopped.lock().unwrap();
+        Ok(stopped
+            .iter()
+            .map(|&chain| StoppedChain {
+                chain,
+                stopped_at: Timestamp::now(),
+                reason: None,
+            })
+            .collect())
     }
 }
 

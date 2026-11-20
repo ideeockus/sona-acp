@@ -24,3 +24,11 @@ agent_network = "sona-agents"
 # listen = "127.0.0.1:7700"
 # api_url = "http://host.docker.internal:7700"
 # agent_network = "sona-agents"
+
+# Safeguards against a runaway chain (D100): a trip stops the chain, and
+# `sapctl resume` starts its count afresh. These are the defaults.
+# [limits]
+# runs_per_chain = 30
+# cost_per_chain_usd = 5.0
+# wakes_per_agent = 20
+# wake_window_minutes = 10

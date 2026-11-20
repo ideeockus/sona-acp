@@ -195,7 +195,8 @@ async fn a_stopped_chain_wakes_nobody_until_resumed() {
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(count("run_started").await, 1);
     let status = operator.call("GET", "/v1/status", None).await;
-    assert_eq!(status["stopped_chains"], json!([chain]));
+    assert_eq!(status["stopped_chains"][0]["chain"], json!(chain));
+    assert_eq!(status["stopped_chains"][0]["reason"], Value::Null);
     assert_eq!(status["agents"][0]["run"], Value::Null);
     assert_eq!(status["agents"][0]["failing"], json!([]));
 

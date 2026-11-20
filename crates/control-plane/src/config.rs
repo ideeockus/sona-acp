@@ -7,6 +7,7 @@ use control_plane_common::Alias;
 use serde::Deserialize;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +35,55 @@ pub struct Config {
     /// Days of closed journal files to keep (D74).
     #[serde(default = "default_retention_days")]
     pub journal_retention_days: u32,
+    #[serde(default)]
+    pub limits: Limits,
+}
+
+/// Safeguards against a runaway chain (D100): `[limits]`, each key optional.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Limits {
+    /// Runs one chain may take since it began or was last resumed.
+    pub runs_per_chain: u32,
+    /// Dollars one chain may spend since it began or was last resumed.
+    pub cost_per_chain_usd: f64,
+    /// Runs one agent may start within `wake_window_minutes`.
+    pub wakes_per_agent: u32,
+    pub wake_window_minutes: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        let limits = control_plane_agent_runtime::Limits::default();
+        Self {
+            runs_per_chain: limits.runs_per_chain,
+            cost_per_chain_usd: limits.cost_per_chain_micros as f64 / 1e6,
+            wakes_per_agent: limits.wakes_per_window,
+            wake_window_minutes: (limits.wake_window.as_secs() / 60) as u32,
+        }
+    }
+}
+
+impl Limits {
+    pub fn to_runtime(&self) -> control_plane_agent_runtime::Limits {
+        control_plane_agent_runtime::Limits {
+            runs_per_chain: self.runs_per_chain,
+            cost_per_chain_micros: (self.cost_per_chain_usd * 1e6).round() as u64,
+            wakes_per_window: self.wakes_per_agent,
+            wake_window: Duration::from_secs(u64::from(self.wake_window_minutes) * 60),
+        }
+    }
+
+    /// A zero limit would stop every chain at once.
+    fn check(&self) -> Result<(), String> {
+        if self.runs_per_chain == 0 || self.wakes_per_agent == 0 || self.wake_window_minutes == 0 {
+            return Err("limits must be above zero".to_owned());
+        }
+        if !(self.cost_per_chain_usd.is_finite() && self.cost_per_chain_usd > 0.0) {
+            return Err("limits.cost_per_chain_usd must be a positive number".to_owned());
+        }
+        Ok(())
+    }
 }
 
 fn default_listen() -> SocketAddr {
@@ -70,6 +120,7 @@ impl Config {
                 config.listen
             ));
         }
+        config.limits.check()?;
         Ok(config)
     }
 }
@@ -103,6 +154,30 @@ mod tests {
         assert_eq!(config.journal_retention_days, 7);
         assert!(config.provider_env.is_empty());
         assert!(config.models_json.is_none());
+        let limits = config.limits.to_runtime();
+        assert_eq!(limits.runs_per_chain, 30);
+        assert_eq!(limits.cost_per_chain_micros, 5_000_000);
+        assert_eq!(limits.wakes_per_window, 20);
+        assert_eq!(limits.wake_window, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn takes_limits_in_part() {
+        let config =
+            Config::parse(&format!("{MINIMAL}\n[limits]\ncost_per_chain_usd = 0.5")).unwrap();
+        let limits = config.limits.to_runtime();
+        assert_eq!(limits.cost_per_chain_micros, 500_000);
+        assert_eq!(limits.runs_per_chain, 30);
+        for invalid in [
+            "runs_per_chain = 0",
+            "cost_per_chain_usd = -1.0",
+            "wake_window_minutes = 0",
+        ] {
+            assert!(
+                Config::parse(&format!("{MINIMAL}\n[limits]\n{invalid}")).is_err(),
+                "{invalid}"
+            );
+        }
     }
 
     #[test]

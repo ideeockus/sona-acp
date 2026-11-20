@@ -1,7 +1,7 @@
 //! Runs as Agent Runtime keeps them, on SQLite (D33, D97).
 
 use control_plane_common::runtime::{RunFilter, RunOutcome, RunRecord, Usage};
-use control_plane_common::{Error, Result, RunId, Timestamp};
+use control_plane_common::{Alias, CorrelationId, Error, Result, RunId, Timestamp};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 
@@ -85,6 +85,36 @@ impl RunStore {
         .await
         .map_err(internal)?;
         Ok(())
+    }
+
+    /// The Runs a chain took since `since`, and what they spent (D100).
+    pub(crate) async fn chain_spent(
+        &self,
+        chain: CorrelationId,
+        since: Option<Timestamp>,
+    ) -> Result<(u32, u64)> {
+        let (runs, cost): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(cost_micros), 0) FROM runs
+             WHERE correlation_id = ? AND started_at >= ?",
+        )
+        .bind(chain.to_string())
+        .bind(since.map_or(0, Timestamp::as_unix_millis))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok((to_u32(runs)?, to_u64(cost)?))
+    }
+
+    /// The Runs an agent started since `since`, in any chain (D100).
+    pub(crate) async fn started_since(&self, agent: &Alias, since: Timestamp) -> Result<u32> {
+        let runs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM runs WHERE agent = ? AND started_at >= ?")
+                .bind(agent.as_str())
+                .bind(since.as_unix_millis())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+        to_u32(runs)
     }
 
     pub(crate) async fn list(&self, filter: &RunFilter) -> Result<Vec<RunRecord>> {
@@ -179,6 +209,10 @@ fn to_i64(value: u64) -> Result<i64> {
 
 fn to_u64(value: i64) -> Result<u64> {
     u64::try_from(value).map_err(|e| Error::Internal(e.to_string()))
+}
+
+fn to_u32(value: i64) -> Result<u32> {
+    u32::try_from(value).map_err(|e| Error::Internal(e.to_string()))
 }
 
 fn internal(error: sqlx::Error) -> Error {

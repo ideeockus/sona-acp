@@ -75,7 +75,8 @@ async fn send_message(
         && s.delivery
             .stopped_chains(&caller)
             .await?
-            .contains(&message.correlation_id);
+            .iter()
+            .any(|stopped| stopped.chain == message.correlation_id);
     Ok((
         StatusCode::CREATED,
         Json(Sent {

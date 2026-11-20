@@ -605,7 +605,12 @@ async fn a_stopped_chain_waits_for_resume() {
     s.broker.stop_chain(&operator(), chain).await.unwrap();
     s.broker.stop_chain(&operator(), chain).await.unwrap();
     assert!(s.broker.is_stopped(chain).await.unwrap());
-    assert_eq!(s.broker.stopped_chains(&operator()).await.unwrap(), [chain]);
+    let chains = s.broker.stopped_chains(&operator()).await.unwrap();
+    assert_eq!(chains.len(), 1);
+    assert_eq!(
+        (chains[0].chain, chains[0].reason.as_deref()),
+        (chain, None)
+    );
     let batch = s.broker.next_batch(&coder).await.unwrap().unwrap();
     assert_eq!(batch.session, going.session());
     s.broker
@@ -740,4 +745,37 @@ async fn only_the_operator_stops_and_resumes_chains() {
     ] {
         assert!(matches!(denied, Err(Error::Forbidden(_))));
     }
+}
+
+#[tokio::test]
+async fn a_halted_chain_keeps_its_reason_and_resume_restarts_its_count() {
+    let s = setup().await;
+    let chain = CorrelationId::new();
+    assert_eq!(s.broker.resumed_at(chain).await.unwrap(), None);
+
+    s.broker
+        .halt_chain(chain, "the chain reached its limit of 30 Runs")
+        .await
+        .unwrap();
+    // A second trip, or the operator stopping it too, keeps the first reason.
+    s.broker.halt_chain(chain, "another").await.unwrap();
+    s.broker.stop_chain(&operator(), chain).await.unwrap();
+    assert!(s.broker.is_stopped(chain).await.unwrap());
+    let stopped = s.broker.stopped_chains(&operator()).await.unwrap();
+    assert_eq!(
+        stopped[0].reason.as_deref(),
+        Some("the chain reached its limit of 30 Runs")
+    );
+
+    let before = Timestamp::now();
+    s.broker.resume_chain(&operator(), chain).await.unwrap();
+    let resumed = s.broker.resumed_at(chain).await.unwrap().unwrap();
+    assert!(resumed >= before);
+    assert!(
+        s.broker
+            .stopped_chains(&operator())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

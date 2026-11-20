@@ -125,8 +125,9 @@ async fn serve(config: Config) -> Result<(), Failure> {
                 api_url: config.api_url,
                 models_json: config.models_json,
                 provider_env: provider_env(&config.provider_env)?,
-                // Numbers to be tuned on the first real runs (O32).
+                // Numbers to be tuned on the first real runs (D91).
                 retry_delays: vec![Duration::from_secs(30), Duration::from_secs(120)],
+                limits: config.limits.to_runtime(),
             },
             database(&config.data_dir, "runtime").await?,
             registry.clone(),

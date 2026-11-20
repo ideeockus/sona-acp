@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use control_plane_common::broker::{
     DeliveryControl, FailingSession, InboxBatch, InboxDelivery, InboxStatus, Message,
-    MessageBroker, NewMessage, Notifications,
+    MessageBroker, NewMessage, Notifications, StoppedChain,
 };
 use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
 use control_plane_common::registry::{AgentDirectory, Credentials};
@@ -340,6 +340,31 @@ impl InboxDelivery for SqliteBroker {
                 .map_err(internal)?;
         Ok(found.is_some())
     }
+
+    async fn halt_chain(&self, chain: CorrelationId, reason: &str) -> Result<()> {
+        // A chain already stopped keeps the reason it was stopped for.
+        sqlx::query(
+            "INSERT INTO stopped_chains (correlation_id, stopped_at, reason) VALUES (?, ?, ?)
+             ON CONFLICT (correlation_id) DO NOTHING",
+        )
+        .bind(chain.to_string())
+        .bind(Timestamp::now().as_unix_millis())
+        .bind(reason)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    async fn resumed_at(&self, chain: CorrelationId) -> Result<Option<Timestamp>> {
+        let at: Option<i64> =
+            sqlx::query_scalar("SELECT resumed_at FROM chain_resumes WHERE correlation_id = ?")
+                .bind(chain.to_string())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        at.map(Timestamp::from_unix_millis).transpose()
+    }
 }
 
 #[async_trait]
@@ -425,14 +450,26 @@ impl DeliveryControl for SqliteBroker {
 
     async fn resume_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()> {
         require_operator(caller)?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
         let deleted = sqlx::query("DELETE FROM stopped_chains WHERE correlation_id = ?")
             .bind(chain.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(internal)?;
         if deleted.rows_affected() == 0 {
             return Err(Error::NotFound(format!("stopped chain {chain}")));
         }
+        // The chain starts its limits afresh (D100).
+        sqlx::query(
+            "INSERT INTO chain_resumes (correlation_id, resumed_at) VALUES (?, ?)
+             ON CONFLICT (correlation_id) DO UPDATE SET resumed_at = excluded.resumed_at",
+        )
+        .bind(chain.to_string())
+        .bind(Timestamp::now().as_unix_millis())
+        .execute(&mut *tx)
+        .await
+        .map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
         // Whoever has mail in the chain gets it now.
         let recipients: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT m.recipient
@@ -453,14 +490,23 @@ impl DeliveryControl for SqliteBroker {
         Ok(())
     }
 
-    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<CorrelationId>> {
+    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<StoppedChain>> {
         require_operator(caller)?;
-        let chains: Vec<String> =
-            sqlx::query_scalar("SELECT correlation_id FROM stopped_chains ORDER BY stopped_at")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(internal)?;
-        chains.iter().map(|c| parse(c)).collect()
+        let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(
+            "SELECT correlation_id, stopped_at, reason FROM stopped_chains ORDER BY stopped_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        rows.into_iter()
+            .map(|(chain, stopped_at, reason)| {
+                Ok(StoppedChain {
+                    chain: parse(&chain)?,
+                    stopped_at: Timestamp::from_unix_millis(stopped_at)?,
+                    reason,
+                })
+            })
+            .collect()
     }
 }
 

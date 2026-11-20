@@ -31,6 +31,31 @@ pub struct RuntimeConfig {
     /// The pause before each retry of a failed session. One failure more, and the
     /// session is stuck until the operator retries or skips it (D77).
     pub retry_delays: Vec<Duration>,
+    pub limits: Limits,
+}
+
+/// Safeguards against a runaway chain (D100). A trip stops the chain until the
+/// operator resumes it; a chain counts from its start or its last resume.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Runs one chain may take.
+    pub runs_per_chain: u32,
+    /// What one chain may spend, in millionths of a dollar.
+    pub cost_per_chain_micros: u64,
+    /// Runs one agent may start within `wake_window`, across all its chains.
+    pub wakes_per_window: u32,
+    pub wake_window: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            runs_per_chain: 30,
+            cost_per_chain_micros: 5_000_000,
+            wakes_per_window: 20,
+            wake_window: Duration::from_secs(10 * 60),
+        }
+    }
 }
 
 pub struct Runtime {

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use control_plane_agent_runtime::launcher::{Launched, Launcher, Process, RunSpec};
-use control_plane_agent_runtime::{Runtime, RuntimeConfig};
+use control_plane_agent_runtime::{Limits, Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentCard, AgentDirectory, Credentials, ModelRef, Secret};
@@ -88,6 +88,9 @@ struct Inbox {
     failures: Mutex<HashMap<SessionKey, u32>>,
     stuck: Mutex<HashSet<SessionKey>>,
     stopped: Mutex<HashSet<CorrelationId>>,
+    /// Why the system halted a chain (D100).
+    halted: Mutex<HashMap<CorrelationId, String>>,
+    resumed: Mutex<HashMap<CorrelationId, Timestamp>>,
     notifications: broadcast::Sender<Alias>,
 }
 
@@ -99,6 +102,8 @@ impl Default for Inbox {
             failures: Mutex::default(),
             stuck: Mutex::default(),
             stopped: Mutex::default(),
+            halted: Mutex::default(),
+            resumed: Mutex::default(),
             notifications: broadcast::channel(16).0,
         }
     }
@@ -110,6 +115,18 @@ impl Inbox {
         let to = message.to.clone();
         self.messages.lock().unwrap().push(message);
         let _ = self.notifications.send(to);
+    }
+
+    /// Resumes a chain and wakes its agent, as Broker does for the operator.
+    fn resume(&self, chain: CorrelationId, agent: &str) {
+        self.stopped.lock().unwrap().remove(&chain);
+        self.halted.lock().unwrap().remove(&chain);
+        self.resumed.lock().unwrap().insert(chain, Timestamp::now());
+        let _ = self.notifications.send(alias_of(agent));
+    }
+
+    fn halted(&self, chain: CorrelationId) -> Option<String> {
+        self.halted.lock().unwrap().get(&chain).cloned()
     }
 
     fn is_read(&self, message: &Message) -> bool {
@@ -200,6 +217,16 @@ impl InboxDelivery for Inbox {
 
     async fn is_stopped(&self, chain: CorrelationId) -> Result<bool> {
         Ok(self.stopped.lock().unwrap().contains(&chain))
+    }
+
+    async fn halt_chain(&self, chain: CorrelationId, reason: &str) -> Result<()> {
+        self.stopped.lock().unwrap().insert(chain);
+        self.halted.lock().unwrap().insert(chain, reason.to_owned());
+        Ok(())
+    }
+
+    async fn resumed_at(&self, chain: CorrelationId) -> Result<Option<Timestamp>> {
+        Ok(self.resumed.lock().unwrap().get(&chain).copied())
     }
 }
 
@@ -380,6 +407,10 @@ async fn setup(scripts: Vec<Script>) -> Setup {
 }
 
 async fn setup_on(pool: SqlitePool, scripts: Vec<Script>) -> Setup {
+    setup_with(pool, scripts, Limits::default()).await
+}
+
+async fn setup_with(pool: SqlitePool, scripts: Vec<Script>, limits: Limits) -> Setup {
     let data_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(uuid_dir());
     let tokens = Arc::new(Tokens::default());
     let inbox = Arc::new(Inbox::default());
@@ -395,6 +426,7 @@ async fn setup_on(pool: SqlitePool, scripts: Vec<Script>) -> Setup {
         models_json: None,
         provider_env: vec![("FAKE_KEY".to_owned(), "k".to_owned())],
         retry_delays: vec![Duration::from_millis(10), Duration::from_millis(20)],
+        limits,
     };
     let runtime = Runtime::new(
         config,
@@ -831,6 +863,7 @@ async fn relative_paths_are_refused() {
         models_json: None,
         provider_env: Vec::new(),
         retry_delays: Vec::new(),
+        limits: Limits::default(),
     };
     let result = Runtime::new(
         config,
@@ -953,4 +986,86 @@ async fn runs_are_filtered_and_for_the_operator_only() {
     };
     let denied = s.runtime.runs(&agent, RunFilter::default()).await;
     assert!(matches!(denied, Err(Error::Forbidden(_))));
+}
+
+fn settles(runs: usize) -> Vec<Script> {
+    (0..runs).map(|_| Script::Settle).collect()
+}
+
+/// Sends `message` and waits until its Run read it.
+async fn deliver(s: &Setup, message: &Message) {
+    s.inbox.add(message.clone());
+    eventually("message read", || s.inbox.is_read(message)).await;
+}
+
+/// Sends `message` and waits until a safeguard halts its chain instead of a Run.
+async fn deliver_halted(s: &Setup, message: &Message) -> String {
+    s.inbox.add(message.clone());
+    eventually("chain halted", || {
+        s.inbox.halted(message.correlation_id).is_some()
+    })
+    .await;
+    assert!(!s.inbox.is_read(message));
+    let halted = s.journal.actions();
+    assert!(halted.contains(&("chain_halted".to_owned(), None)));
+    s.inbox.halted(message.correlation_id).unwrap()
+}
+
+#[tokio::test]
+async fn a_chain_over_its_runs_is_halted_and_resume_counts_afresh() {
+    let limits = Limits {
+        runs_per_chain: 2,
+        ..Limits::default()
+    };
+    let s = setup_with(memory_pool().await, settles(4), limits).await;
+    s.runtime.start().await.unwrap();
+    let chain = CorrelationId::new();
+    deliver(&s, &message("coder", None, chain)).await;
+    deliver(&s, &message("coder", None, chain)).await;
+
+    let third = message("coder", None, chain);
+    let reason = deliver_halted(&s, &third).await;
+    assert_eq!(reason, "the chain reached its limit of 2 Runs");
+    assert_eq!(s.pi.specs.lock().unwrap().len(), 2);
+
+    // Resumed, the chain may take two Runs more.
+    s.inbox.resume(chain, "coder");
+    eventually("message read", || s.inbox.is_read(&third)).await;
+    deliver(&s, &message("coder", None, chain)).await;
+    assert_eq!(s.pi.specs.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn a_chain_over_its_cost_is_halted() {
+    // One fake Run spends $0.0015.
+    let limits = Limits {
+        cost_per_chain_micros: 1500,
+        ..Limits::default()
+    };
+    let s = setup_with(memory_pool().await, settles(2), limits).await;
+    s.runtime.start().await.unwrap();
+    let chain = CorrelationId::new();
+    deliver(&s, &message("coder", None, chain)).await;
+
+    let reason = deliver_halted(&s, &message("coder", None, chain)).await;
+    assert_eq!(reason, "the chain reached its limit of $0.00 (spent $0.00)");
+    // Other chains go on.
+    deliver(&s, &message("coder", None, CorrelationId::new())).await;
+}
+
+#[tokio::test]
+async fn an_agent_waking_too_often_halts_the_chain_that_wakes_it() {
+    let limits = Limits {
+        wakes_per_window: 2,
+        ..Limits::default()
+    };
+    let s = setup_with(memory_pool().await, settles(3), limits).await;
+    s.runtime.start().await.unwrap();
+    deliver(&s, &message("coder", None, CorrelationId::new())).await;
+    deliver(&s, &message("coder", None, CorrelationId::new())).await;
+
+    let reason = deliver_halted(&s, &message("coder", None, CorrelationId::new())).await;
+    assert_eq!(reason, "@coder reached its limit of 2 wakes in 10 minutes");
+    // Other agents are counted on their own.
+    deliver(&s, &message("manager", None, CorrelationId::new())).await;
 }

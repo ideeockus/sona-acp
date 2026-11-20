@@ -58,6 +58,15 @@ pub struct FailingSession {
     pub stuck: bool,
 }
 
+/// A chain that delivers nothing until it is resumed (D27).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoppedChain {
+    pub chain: CorrelationId,
+    pub stopped_at: Timestamp,
+    /// Why the system stopped it, such as a safeguard (D100). `None` when the operator did.
+    pub reason: Option<String>,
+}
+
 /// An agent's inbox at a glance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxStatus {
@@ -125,8 +134,15 @@ pub trait InboxDelivery: Send + Sync {
     /// Stops delivering the session until the operator retries or skips it (D77).
     async fn mark_stuck(&self, agent: &Alias, session: SessionKey) -> Result<()>;
 
-    /// Whether the operator stopped the chain (D27).
+    /// Whether the chain is stopped (D27).
     async fn is_stopped(&self, chain: CorrelationId) -> Result<bool>;
+
+    /// Stops a chain on the system's own behalf, such as a safeguard (D100). The
+    /// operator resumes it like any other.
+    async fn halt_chain(&self, chain: CorrelationId, reason: &str) -> Result<()>;
+
+    /// When the chain was last resumed. Its limits count from there (D100).
+    async fn resumed_at(&self, chain: CorrelationId) -> Result<Option<Timestamp>>;
 }
 
 /// What the operator calls to see and unblock delivery (D77). Exposed through the API.
@@ -148,7 +164,7 @@ pub trait DeliveryControl: Send + Sync {
     /// Delivers the chain again, including what arrived while it was stopped.
     async fn resume_chain(&self, caller: &Caller, chain: CorrelationId) -> Result<()>;
 
-    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<CorrelationId>>;
+    async fn stopped_chains(&self, caller: &Caller) -> Result<Vec<StoppedChain>>;
 }
 
 #[cfg(test)]
