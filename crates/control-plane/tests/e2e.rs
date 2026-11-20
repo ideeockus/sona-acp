@@ -118,6 +118,7 @@ async fn an_agent_answers_the_operator_past_gateway() {
     assert_eq!(runs[0]["outcome"], "ok");
     assert_eq!(runs[0]["correlation_id"], chain.as_str());
     assert!(runs[0]["usage"]["tokens_in"].as_u64().unwrap() > 0);
+    assert_eq!(runs[0]["card_version"], 1);
 
     // Afterwards the agent is idle with nothing left to deliver.
     let status = operator.call("GET", "/v1/status", None).await;
@@ -127,6 +128,18 @@ async fn an_agent_answers_the_operator_past_gateway() {
                              "unread": 0, "failing": [] }],
                 "stopped_chains": [] })
     );
+
+    // An edit is the next version; one based on the old version is refused.
+    let mut agent = operator.call("GET", "/v1/agents/coder", None).await;
+    agent["title"] = json!("Writes and tests code");
+    let saved = operator
+        .call("PUT", "/v1/agents/coder", Some(agent.clone()))
+        .await;
+    assert_eq!(saved["version"], 2);
+    let stale = operator
+        .try_call("PUT", "/v1/agents/coder", Some(agent))
+        .await;
+    assert!(stale.unwrap_err().starts_with("409"));
 
     // The model saw why the read was refused.
     let requests = model.requests.lock().unwrap();

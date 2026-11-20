@@ -33,7 +33,9 @@ enum Ended {
 struct Run {
     /// The agent as it acts in this Run: its alias, `run_id` and chain.
     caller: Caller,
+    /// The card as it was when the Run began: a later edit applies to the next (D95).
     card: AgentCard,
+    card_version: u32,
     batch: InboxBatch,
     run_id: RunId,
     correlation_id: CorrelationId,
@@ -61,13 +63,15 @@ impl Inner {
             .first()
             .map(|m| m.correlation_id)
             .ok_or_else(|| Error::Internal("empty batch".to_owned()))?;
+        let current = self.directory.versioned_agent(agent).await?;
         let run = Run {
             caller: Caller::Agent {
                 alias: agent.clone(),
                 run_id,
                 correlation_id,
             },
-            card: self.directory.agent(agent).await?,
+            card: current.card,
+            card_version: current.version,
             batch,
             run_id,
             correlation_id,
@@ -178,6 +182,7 @@ impl Inner {
             .begin(&RunRecord {
                 run_id: run.run_id,
                 agent: agent.clone(),
+                card_version: run.card_version,
                 session: run.batch.session,
                 correlation_id: run.correlation_id,
                 started_at: Timestamp::now(),

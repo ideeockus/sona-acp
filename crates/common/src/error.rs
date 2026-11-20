@@ -17,6 +17,9 @@ pub enum Error {
     NotFound(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// The call was based on a state that has changed since, such as an older card.
+    #[error("conflict: {0}")]
+    Conflict(String),
     #[error("internal error: {0}")]
     Internal(String),
 }

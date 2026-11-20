@@ -1,6 +1,6 @@
 //! The contract of Agent Registry.
 
-use crate::{Alias, Caller, CorrelationId, Result, RunId};
+use crate::{Alias, Caller, CorrelationId, Result, RunId, Timestamp};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -30,6 +30,24 @@ pub struct AgentCard {
     /// when not given, so it comes back always set.
     #[serde(default)]
     pub hue: Option<u16>,
+}
+
+/// An agent as Registry keeps it: its card and the card's version (D95). An edit
+/// sends it back with the version it was based on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Agent {
+    #[serde(flatten)]
+    pub card: AgentCard,
+    pub version: u32,
+}
+
+/// One version of a card: who saved it and when (D95).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentVersion {
+    pub version: u32,
+    pub author: Alias,
+    pub saved_at: Timestamp,
+    pub card: AgentCard,
 }
 
 /// A group of tools granted together (D99). The one place that says which tools a
@@ -121,16 +139,27 @@ pub trait AgentRegistry: Send + Sync {
     async fn create_agent(&self, caller: &Caller, card: AgentCard) -> Result<()>;
 
     /// Returns an agent, including its prompt. Operator only.
-    async fn get_agent(&self, caller: &Caller, alias: &Alias) -> Result<AgentCard>;
+    async fn get_agent(&self, caller: &Caller, alias: &Alias) -> Result<Agent>;
 
     /// All agents, ordered by alias. Operator only.
-    async fn list_agents(&self, caller: &Caller) -> Result<Vec<AgentCard>>;
+    async fn list_agents(&self, caller: &Caller) -> Result<Vec<Agent>>;
+
+    /// Saves an edited card as the next version (D95). `Conflict` when the edit was
+    /// based on a version that is no longer the latest. Everything but the alias
+    /// may change. Operator only.
+    async fn update_agent(&self, caller: &Caller, edit: Agent) -> Result<Agent>;
+
+    /// Every version of an agent's card, newest first. Operator only.
+    async fn agent_versions(&self, caller: &Caller, alias: &Alias) -> Result<Vec<AgentVersion>>;
 }
 
 /// What other components read. Internal, never exposed through the API.
 #[async_trait]
 pub trait AgentDirectory: Send + Sync {
     async fn agent(&self, alias: &Alias) -> Result<AgentCard>;
+
+    /// The card with its version, for a Run to record which one it ran with (D95).
+    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent>;
 }
 
 /// Issuing and checking credentials. Internal, never exposed through the API.

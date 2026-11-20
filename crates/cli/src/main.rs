@@ -9,7 +9,7 @@ mod status;
 use clap::{Args, Parser, Subcommand};
 use client::Client;
 use control_plane_common::broker::NewMessage;
-use control_plane_common::registry::AgentCard;
+use control_plane_common::registry::{Agent, AgentCard};
 use control_plane_common::status::Status;
 use control_plane_common::tasks::{NewTask, TaskResult, TaskStatus, TaskUpdate};
 use control_plane_common::{Alias, CorrelationId, MessageId, RunId, SessionKey, TaskId, Timestamp};
@@ -83,7 +83,17 @@ enum AgentsCommand {
         card: PathBuf,
     },
     List,
+    /// Prints an agent's card with its version, the starting point of an edit.
     Get {
+        alias: Alias,
+    },
+    /// Saves an edited card, a JSON file as `agents get` prints it (D101). Refused
+    /// when the card changed since the version in the file.
+    Edit {
+        card: PathBuf,
+    },
+    /// Lists every version of an agent's card, newest first.
+    Versions {
         alias: Alias,
     },
 }
@@ -179,12 +189,18 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         Command::Agents(AgentsCommand::Create { card }) => (
             Method::POST,
             "/v1/agents".into(),
-            Some(json(read_card(&card)?)),
+            Some(json(read_json::<AgentCard>(&card)?)),
         ),
         Command::Agents(AgentsCommand::List) => (Method::GET, "/v1/agents".into(), None),
         Command::Agents(AgentsCommand::Get { alias }) => {
             (Method::GET, format!("/v1/agents/{}", alias.as_str()), None)
         }
+        Command::Agents(AgentsCommand::Edit { card }) => edit(read_json(&card)?),
+        Command::Agents(AgentsCommand::Versions { alias }) => (
+            Method::GET,
+            format!("/v1/agents/{}/versions", alias.as_str()),
+            None,
+        ),
         Command::Send {
             to,
             body,
@@ -280,10 +296,15 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
 }
 
 /// Parsed here first, so a malformed card fails before it reaches the API.
-fn read_card(path: &Path) -> Result<AgentCard, String> {
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn edit(agent: Agent) -> (Method, String, Option<Value>) {
+    let path = format!("/v1/agents/{}", agent.card.alias.as_str());
+    (Method::PUT, path, Some(json(agent)))
 }
 
 fn json(value: impl Serialize) -> Value {
@@ -386,6 +407,21 @@ mod tests {
         let chain = CorrelationId::new();
         let (_, path, _) = request_of(&["runs", "--agent", "coder", "--chain", &chain.to_string()]);
         assert_eq!(path, format!("/v1/runs?agent=coder&chain={chain}"));
+    }
+
+    #[test]
+    fn an_edit_puts_the_card_with_its_version() {
+        let agent: Agent = serde_json::from_value(json!({
+            "alias": "coder", "title": "", "model": {"provider": "p", "id": "m"},
+            "access": [], "allow_message_to": [], "prompt": "", "hue": 25, "version": 3
+        }))
+        .unwrap();
+        let (method, path, body) = edit(agent);
+        assert_eq!((method, path.as_str()), (Method::PUT, "/v1/agents/coder"));
+        let body = body.unwrap();
+        assert_eq!((&body["version"], &body["hue"]), (&json!(3), &json!(25)));
+        let (_, path, _) = request_of(&["agents", "versions", "coder"]);
+        assert_eq!(path, "/v1/agents/coder/versions");
     }
 
     #[test]

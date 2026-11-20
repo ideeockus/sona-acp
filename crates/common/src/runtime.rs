@@ -47,6 +47,8 @@ pub enum RunOutcome {
 pub struct RunRecord {
     pub run_id: RunId,
     pub agent: Alias,
+    /// The version of the agent's card the Run ran with (D95).
+    pub card_version: u32,
     pub session: SessionKey,
     pub correlation_id: CorrelationId,
     pub started_at: Timestamp,

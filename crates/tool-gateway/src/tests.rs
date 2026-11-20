@@ -1,5 +1,5 @@
 use super::*;
-use control_plane_common::registry::{Access, AgentCard, ModelRef};
+use control_plane_common::registry::{Access, Agent, AgentCard, ModelRef};
 use control_plane_common::{Alias, CorrelationId, RunId};
 use std::sync::Mutex;
 
@@ -24,6 +24,11 @@ impl AgentDirectory for Directory {
             prompt: String::new(),
             hue: None,
         })
+    }
+
+    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent> {
+        let card = self.agent(alias).await?;
+        Ok(Agent { card, version: 1 })
     }
 }
 

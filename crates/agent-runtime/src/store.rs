@@ -24,11 +24,13 @@ impl RunStore {
 
     pub(crate) async fn begin(&self, run: &RunRecord) -> Result<()> {
         sqlx::query(
-            "INSERT INTO runs (id, agent, session, correlation_id, started_at, outcome)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO runs (id, agent, card_version, session, correlation_id, started_at,
+                               outcome)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(run.run_id.to_string())
         .bind(run.agent.as_str())
+        .bind(run.card_version)
         .bind(run.session.to_string())
         .bind(run.correlation_id.to_string())
         .bind(run.started_at.as_unix_millis())
@@ -119,7 +121,7 @@ impl RunStore {
 
     pub(crate) async fn list(&self, filter: &RunFilter) -> Result<Vec<RunRecord>> {
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, agent, session, correlation_id, started_at, finished_at, outcome,
+            "SELECT id, agent, card_version, session, correlation_id, started_at, finished_at, outcome,
                     reason, tokens_in, tokens_out, cost_micros
              FROM runs
              WHERE (?1 IS NULL OR agent = ?1) AND (?2 IS NULL OR correlation_id = ?2)
@@ -137,7 +139,7 @@ impl RunStore {
 
     pub(crate) async fn get(&self, run_id: RunId) -> Result<RunRecord> {
         let row: Option<Row> = sqlx::query_as(
-            "SELECT id, agent, session, correlation_id, started_at, finished_at, outcome,
+            "SELECT id, agent, card_version, session, correlation_id, started_at, finished_at, outcome,
                     reason, tokens_in, tokens_out, cost_micros
              FROM runs WHERE id = ?",
         )
@@ -154,6 +156,7 @@ impl RunStore {
 struct Row {
     id: String,
     agent: String,
+    card_version: i64,
     session: String,
     correlation_id: String,
     started_at: i64,
@@ -170,6 +173,8 @@ impl Row {
         Ok(RunRecord {
             run_id: parse(&self.id)?,
             agent: parse(&self.agent)?,
+            card_version: u32::try_from(self.card_version)
+                .map_err(|e| Error::Internal(e.to_string()))?,
             session: parse(&self.session)?,
             correlation_id: parse(&self.correlation_id)?,
             started_at: Timestamp::from_unix_millis(self.started_at)?,

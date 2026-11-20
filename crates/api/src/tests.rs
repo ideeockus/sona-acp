@@ -65,11 +65,22 @@ impl AgentRegistry for Registry {
     async fn create_agent(&self, caller: &Caller, _: AgentCard) -> Result<()> {
         operator_only(caller)
     }
-    async fn get_agent(&self, caller: &Caller, _: &Alias) -> Result<AgentCard> {
+    async fn get_agent(&self, caller: &Caller, _: &Alias) -> Result<Agent> {
         operator_only(caller)?;
         Err(Error::NotFound("agent @ghost".to_owned()))
     }
-    async fn list_agents(&self, caller: &Caller) -> Result<Vec<AgentCard>> {
+    async fn list_agents(&self, caller: &Caller) -> Result<Vec<Agent>> {
+        operator_only(caller)?;
+        Ok(Vec::new())
+    }
+    async fn update_agent(&self, caller: &Caller, edit: Agent) -> Result<Agent> {
+        operator_only(caller)?;
+        Err(Error::Conflict(format!(
+            "{} is at version 3",
+            edit.card.alias
+        )))
+    }
+    async fn agent_versions(&self, caller: &Caller, _: &Alias) -> Result<Vec<AgentVersion>> {
         operator_only(caller)?;
         Ok(Vec::new())
     }
@@ -370,6 +381,41 @@ async fn component_errors_map_to_status_codes() {
     )
     .await;
     assert_eq!((status, body), (StatusCode::CREATED, Value::Null));
+}
+
+#[tokio::test]
+async fn an_edit_keeps_the_alias_and_a_stale_one_is_a_409() {
+    let s = setup();
+    let edit = |alias: &str| {
+        json!({"alias": alias, "title": "", "model": {"provider": "p", "id": "m"},
+               "access": [], "allow_message_to": [], "prompt": "", "version": 2})
+    };
+    let put = |path: &'static str, body: Value| {
+        call(&s.app, Method::PUT, path, Some(OPERATOR), Some(body))
+    };
+
+    let (status, body) = put("/v1/agents/coder", edit("tester")).await;
+    assert_eq!(
+        (status, body["kind"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_input"))
+    );
+
+    // The stand-in Registry is always at a newer version.
+    let (status, body) = put("/v1/agents/coder", edit("coder")).await;
+    assert_eq!(
+        (status, body["kind"].as_str()),
+        (StatusCode::CONFLICT, Some("conflict"))
+    );
+
+    let (status, _) = call(
+        &s.app,
+        Method::GET,
+        "/v1/agents/coder/versions",
+        Some(AGENT),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 use super::*;
-use control_plane_common::registry::{AgentCard, ModelRef, Secret};
+use control_plane_common::registry::{Agent, AgentCard, ModelRef, Secret};
 use control_plane_common::tasks::TaskResult;
 use control_plane_common::{CorrelationId, RunId};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -27,6 +27,11 @@ impl AgentDirectory for Directory {
             prompt: String::new(),
             hue: None,
         })
+    }
+
+    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent> {
+        let card = self.agent(alias).await?;
+        Ok(Agent { card, version: 1 })
     }
 }
 

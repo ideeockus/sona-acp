@@ -61,6 +61,7 @@ impl IntoResponse for ApiError {
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::InvalidInput(_) => StatusCode::BAD_REQUEST,
+            Error::Conflict(_) => StatusCode::CONFLICT,
             Error::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let error = match self.0 {

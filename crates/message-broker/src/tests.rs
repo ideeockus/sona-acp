@@ -1,6 +1,6 @@
 use super::*;
 use control_plane_common::RunId;
-use control_plane_common::registry::{AgentCard, ModelRef, Secret};
+use control_plane_common::registry::{Agent, AgentCard, ModelRef, Secret};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Mutex;
 
@@ -17,6 +17,11 @@ impl AgentDirectory for Directory {
             .find(|card| &card.alias == alias)
             .cloned()
             .ok_or_else(|| Error::NotFound(format!("agent {alias}")))
+    }
+
+    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent> {
+        let card = self.agent(alias).await?;
+        Ok(Agent { card, version: 1 })
     }
 }
 

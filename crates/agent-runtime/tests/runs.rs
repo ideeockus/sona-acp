@@ -6,7 +6,7 @@ use control_plane_agent_runtime::{Limits, Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{
-    Access, AgentCard, AgentDirectory, Credentials, ModelRef, Secret,
+    Access, Agent, AgentCard, AgentDirectory, Credentials, ModelRef, Secret,
 };
 use control_plane_common::runtime::{RunControl, RunFilter, RunOutcome, Usage};
 use control_plane_common::{
@@ -46,6 +46,11 @@ impl AgentDirectory for Directory {
             prompt: format!("You are {alias}."),
             hue: None,
         })
+    }
+
+    async fn versioned_agent(&self, alias: &Alias) -> Result<Agent> {
+        let card = self.agent(alias).await?;
+        Ok(Agent { card, version: 7 })
     }
 }
 
@@ -898,6 +903,7 @@ async fn a_run_is_kept_with_what_it_spent() {
     assert_eq!(runs.len(), 1);
     let run = &runs[0];
     assert_eq!((run.agent.as_str(), run.outcome), ("coder", RunOutcome::Ok));
+    assert_eq!(run.card_version, 7);
     assert_eq!(run.correlation_id, first.correlation_id);
     assert!(run.finished_at.is_some());
     assert_eq!(

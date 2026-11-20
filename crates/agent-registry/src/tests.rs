@@ -58,7 +58,7 @@ async fn created_agent_can_be_read_back() {
         .get_agent(&operator(), &alias("coder"))
         .await
         .unwrap();
-    assert_eq!(read, card("coder").with_hue());
+    assert_eq!((read.card, read.version), (card("coder").with_hue(), 1));
     assert_eq!(
         registry.agent(&alias("coder")).await.unwrap(),
         card("coder").with_hue()
@@ -77,7 +77,7 @@ async fn agents_are_listed_by_alias() {
         .await
         .unwrap()
         .iter()
-        .map(|c| c.alias.to_string())
+        .map(|c| c.card.alias.to_string())
         .collect();
     assert_eq!(names, ["@architect", "@coder"]);
 }
@@ -249,7 +249,7 @@ async fn finds_active_token_inside_text() {
 }
 
 #[tokio::test]
-async fn cards_with_single_tools_move_to_groups() {
+async fn cards_from_before_move_to_groups_and_become_version_one() {
     let pool = memory_pool().await;
     let mut before = sqlx::migrate!();
     before.migrations = before.migrations[..1].to_vec().into();
@@ -257,11 +257,15 @@ async fn cards_with_single_tools_move_to_groups() {
     let old = r#"{"alias": "coder", "title": "", "model": {"provider": "p", "id": "m"},
                   "allow_tools": ["read_messages", "read", "edit", "write", "send_message"],
                   "allow_message_to": [], "prompt": ""}"#;
-    sqlx::query("INSERT INTO principals (alias, kind, card) VALUES ('coder', 'agent', ?)")
-        .bind(old)
-        .execute(&pool)
-        .await
-        .unwrap();
+    // Agents exist only after `init` created the operator.
+    sqlx::query(
+        "INSERT INTO principals (alias, kind, card)
+         VALUES ('user', 'operator', NULL), ('coder', 'agent', ?)",
+    )
+    .bind(old)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let registry = SqliteRegistry::new(pool).await.unwrap();
     let mut access = registry.agent(&alias("coder")).await.unwrap().access;
@@ -269,6 +273,15 @@ async fn cards_with_single_tools_move_to_groups() {
     assert_eq!(
         access,
         [Access::ReadFiles, Access::SendMessages, Access::WriteFiles]
+    );
+    // The card from before is version 1, saved by the operator.
+    let versions = registry
+        .agent_versions(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (versions.len(), versions[0].version, &versions[0].author),
+        (1, 1, &alias("user"))
     );
 }
 
@@ -295,5 +308,101 @@ async fn a_card_gets_a_hue_from_its_alias_unless_given_one() {
     assert!(matches!(
         registry.create_agent(&operator(), invalid).await,
         Err(Error::InvalidInput(_))
+    ));
+}
+
+#[tokio::test]
+async fn an_edit_saves_the_next_version_and_keeps_the_previous() {
+    let registry = registry_with_coder().await;
+    let mut edit = registry
+        .get_agent(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    edit.card.prompt = "You write tests first.".to_owned();
+    let saved = registry
+        .update_agent(&operator(), edit.clone())
+        .await
+        .unwrap();
+    assert_eq!(saved.version, 2);
+    assert_eq!(registry.agent(&alias("coder")).await.unwrap(), saved.card);
+    assert_eq!(
+        registry.versioned_agent(&alias("coder")).await.unwrap(),
+        saved
+    );
+
+    let versions = registry
+        .agent_versions(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    let numbers: Vec<u32> = versions.iter().map(|v| v.version).collect();
+    assert_eq!(numbers, [2, 1]);
+    assert_eq!(versions[0].author, alias("user"));
+    assert_eq!(versions[1].card.prompt, "You write code.");
+}
+
+#[tokio::test]
+async fn an_edit_based_on_an_old_version_is_refused() {
+    let registry = registry_with_coder().await;
+    let base = registry
+        .get_agent(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    let mut first = base.clone();
+    first.card.title = "First".to_owned();
+    registry.update_agent(&operator(), first).await.unwrap();
+
+    let mut second = base;
+    second.card.title = "Second".to_owned();
+    assert!(matches!(
+        registry.update_agent(&operator(), second).await,
+        Err(Error::Conflict(_))
+    ));
+    let current = registry.agent(&alias("coder")).await.unwrap();
+    assert_eq!(current.title, "First");
+}
+
+#[tokio::test]
+async fn saving_the_same_card_makes_no_version() {
+    let registry = registry_with_coder().await;
+    let same = registry
+        .get_agent(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    let saved = registry.update_agent(&operator(), same).await.unwrap();
+    assert_eq!(saved.version, 1);
+    let versions = registry
+        .agent_versions(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    assert_eq!(versions.len(), 1);
+}
+
+#[tokio::test]
+async fn only_the_operator_edits_and_unknown_agents_are_not_found() {
+    let registry = registry_with_coder().await;
+    let edit = registry
+        .get_agent(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    let agent = Caller::Agent {
+        alias: alias("coder"),
+        run_id: RunId::new(),
+        correlation_id: CorrelationId::new(),
+    };
+    assert!(matches!(
+        registry.update_agent(&agent, edit.clone()).await,
+        Err(Error::Forbidden(_))
+    ));
+    assert!(matches!(
+        registry.agent_versions(&agent, &alias("coder")).await,
+        Err(Error::Forbidden(_))
+    ));
+    let ghost = Agent {
+        card: card("ghost"),
+        version: 1,
+    };
+    assert!(matches!(
+        registry.update_agent(&operator(), ghost).await,
+        Err(Error::NotFound(_))
     ));
 }

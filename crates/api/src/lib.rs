@@ -12,7 +12,7 @@ use axum::{Json, Router};
 use control_plane_common::broker::{DeliveryControl, Message, MessageBroker, NewMessage};
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
-use control_plane_common::registry::{AgentCard, AgentRegistry, Credentials};
+use control_plane_common::registry::{Agent, AgentCard, AgentRegistry, AgentVersion, Credentials};
 use control_plane_common::runtime::{RunControl, RunFilter, RunRecord};
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskUpdate, TaskView};
@@ -44,7 +44,8 @@ pub fn router(services: Services) -> Router {
         .route("/v1/tasks/{id}", get(get_task).patch(update_task))
         .route("/v1/gateway/check", post(check_tool))
         .route("/v1/agents", post(create_agent).get(list_agents))
-        .route("/v1/agents/{alias}", get(get_agent))
+        .route("/v1/agents/{alias}", get(get_agent).put(update_agent))
+        .route("/v1/agents/{alias}/versions", get(agent_versions))
         .route("/v1/agents/{alias}/sessions/{session}/retry", post(retry))
         .route("/v1/agents/{alias}/sessions/{session}/skip", post(skip))
         .route("/v1/chains/{id}/stop", post(stop_chain))
@@ -140,10 +141,7 @@ async fn create_agent(
     Ok(StatusCode::CREATED)
 }
 
-async fn list_agents(
-    State(s): Shared,
-    Authenticated(caller): Authenticated,
-) -> Reply<Vec<AgentCard>> {
+async fn list_agents(State(s): Shared, Authenticated(caller): Authenticated) -> Reply<Vec<Agent>> {
     Ok(Json(s.registry.list_agents(&caller).await?))
 }
 
@@ -151,9 +149,32 @@ async fn get_agent(
     State(s): Shared,
     Authenticated(caller): Authenticated,
     Path(alias): Path<String>,
-) -> Reply<AgentCard> {
+) -> Reply<Agent> {
     let alias: Alias = parse(&alias)?;
     Ok(Json(s.registry.get_agent(&caller, &alias).await?))
+}
+
+/// The whole card with the version it was based on (D101).
+async fn update_agent(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+    Body(edit): Body<Agent>,
+) -> Reply<Agent> {
+    let alias: Alias = parse(&alias)?;
+    if edit.card.alias != alias {
+        return Err(Error::InvalidInput("an agent's alias never changes".to_owned()).into());
+    }
+    Ok(Json(s.registry.update_agent(&caller, edit).await?))
+}
+
+async fn agent_versions(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+) -> Reply<Vec<AgentVersion>> {
+    let alias: Alias = parse(&alias)?;
+    Ok(Json(s.registry.agent_versions(&caller, &alias).await?))
 }
 
 async fn retry(
@@ -202,6 +223,7 @@ async fn resume_chain(
 /// stopped chains (D27).
 async fn status(State(s): Shared, Authenticated(caller): Authenticated) -> Reply<Status> {
     let cards = s.registry.list_agents(&caller).await?;
+    let cards = cards.into_iter().map(|agent| agent.card).collect();
     let inboxes = s.delivery.inbox_status(&caller).await?;
     let runs = s.runs.active_runs(&caller).await?;
     Ok(Json(Status {
