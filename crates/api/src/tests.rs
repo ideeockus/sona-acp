@@ -4,7 +4,7 @@ use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
 use control_plane_common::broker::{InboxStatus, StoppedChain};
 use control_plane_common::registry::Secret;
-use control_plane_common::runtime::{ActiveRun, RunFilter, RunRecord};
+use control_plane_common::runtime::{ActiveRun, RunFilter, RunRecord, TranscriptEntry};
 use control_plane_common::{Caller, MessageId, Result, Timestamp};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -283,6 +283,10 @@ impl RunControl for Runs {
         operator_only(caller)?;
         self.0.push(format!("abort {chain}"));
         Ok(())
+    }
+    async fn transcript(&self, caller: &Caller, _: RunId) -> Result<Vec<TranscriptEntry>> {
+        operator_only(caller)?;
+        Ok(Vec::new())
     }
     async fn abort_agent(&self, caller: &Caller, agent: &Alias, reason: &str) -> Result<()> {
         operator_only(caller)?;
@@ -779,5 +783,15 @@ async fn conversations_page_and_mark_read() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = call(&s.app, Method::GET, "/v1/conversations", Some(AGENT), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_transcript_is_for_the_operator() {
+    let s = setup();
+    let uri = format!("/v1/runs/{}/transcript", RunId::new());
+    let (status, body) = call(&s.app, Method::GET, &uri, Some(OPERATOR), None).await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
+    let (status, _) = call(&s.app, Method::GET, &uri, Some(AGENT), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }

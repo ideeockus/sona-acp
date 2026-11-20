@@ -3,12 +3,15 @@
 use crate::launcher::Launcher;
 use crate::run::Stop;
 use crate::store::RunStore;
+use crate::transcript;
 use async_trait::async_trait;
 use control_plane_common::broker::{InboxDelivery, Notifications};
 use control_plane_common::journal::{Component, Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentDirectory, Credentials};
-use control_plane_common::runtime::{ActiveRun, RunControl, RunFilter, RunRecord};
-use control_plane_common::{Alias, Caller, CorrelationId, Error, Result, RunId, SessionKey};
+use control_plane_common::runtime::{ActiveRun, RunControl, RunFilter, RunRecord, TranscriptEntry};
+use control_plane_common::{
+    Alias, Caller, CorrelationId, Error, Result, RunId, SessionKey, Timestamp,
+};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -217,6 +220,11 @@ impl Inner {
             .await
     }
 
+    /// The agent's workdir and Pi sessions live here, across Runs (D81).
+    pub(crate) fn agent_dir(&self, agent: &Alias) -> PathBuf {
+        self.config.data_dir.join("agents").join(agent.as_str())
+    }
+
     fn serving(&self) -> MutexGuard<'_, HashMap<Alias, Arc<Notify>>> {
         self.serving.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -266,6 +274,14 @@ impl RunControl for Runtime {
     async fn run(&self, caller: &Caller, run_id: RunId) -> Result<RunRecord> {
         require_operator(caller)?;
         self.inner.runs.get(run_id).await
+    }
+
+    async fn transcript(&self, caller: &Caller, run_id: RunId) -> Result<Vec<TranscriptEntry>> {
+        require_operator(caller)?;
+        let run = self.inner.runs.get(run_id).await?;
+        let sessions = self.inner.agent_dir(&run.agent).join("sessions");
+        let to = run.finished_at.unwrap_or_else(Timestamp::now);
+        transcript::read(&sessions, run.session, run.started_at, to).await
     }
 }
 

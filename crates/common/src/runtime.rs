@@ -58,6 +58,43 @@ pub struct RunRecord {
     pub usage: Usage,
 }
 
+/// One step of a Run as the model saw it, from Pi's session (D102). Our own shape, so
+/// the UI does not depend on Pi's format.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptEntry {
+    pub at: Timestamp,
+    #[serde(flatten)]
+    pub step: Step,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Step {
+    /// What Runtime told the agent: the prompt, or mail delivered while it worked.
+    Prompt {
+        text: String,
+        truncated: bool,
+    },
+    Thinking {
+        text: String,
+        truncated: bool,
+    },
+    Answer {
+        text: String,
+        truncated: bool,
+    },
+    ToolCall {
+        tool: String,
+        arguments: serde_json::Value,
+    },
+    ToolResult {
+        tool: String,
+        text: String,
+        truncated: bool,
+        is_error: bool,
+    },
+}
+
 /// Which Runs to list. Empty means all; newest first either way.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunFilter {
@@ -83,4 +120,8 @@ pub trait RunControl: Send + Sync {
     async fn runs(&self, caller: &Caller, filter: RunFilter) -> Result<Vec<RunRecord>>;
 
     async fn run(&self, caller: &Caller, run_id: RunId) -> Result<RunRecord>;
+
+    /// What the model saw and did in the Run, oldest first (D102). Empty when Pi
+    /// wrote nothing. Operator only.
+    async fn transcript(&self, caller: &Caller, run_id: RunId) -> Result<Vec<TranscriptEntry>>;
 }

@@ -75,6 +75,8 @@ enum Command {
     Stop { chain: CorrelationId },
     /// Delivers a stopped chain again, with what arrived meanwhile (D27).
     Resume { chain: CorrelationId },
+    /// What the model saw and did in a Run (D102).
+    Transcript { run: RunId },
     /// The newest Runs with what they spent (D97).
     Runs {
         #[arg(long)]
@@ -338,6 +340,7 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
             }
             (Method::GET, path, None)
         }
+        Command::Transcript { run } => (Method::GET, format!("/v1/runs/{run}/transcript"), None),
         Command::Runs { agent, chain } => {
             let mut query = Vec::new();
             if let Some(agent) = agent {
@@ -518,6 +521,13 @@ mod tests {
             format!("/v1/conversations/coder/messages?before={before}")
         );
         assert!(parse(&["conversations", "--before", &before.to_string()]).is_err());
+    }
+
+    #[test]
+    fn a_transcript_names_its_run() {
+        let run = RunId::new();
+        let (_, path, _) = request_of(&["transcript", &run.to_string()]);
+        assert_eq!(path, format!("/v1/runs/{run}/transcript"));
     }
 
     #[test]

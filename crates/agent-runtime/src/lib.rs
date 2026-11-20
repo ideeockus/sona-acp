@@ -10,5 +10,6 @@ pub mod rpc;
 mod run;
 mod runtime;
 mod store;
+mod transcript;
 
 pub use runtime::{Limits, Runtime, RuntimeConfig};

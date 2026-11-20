@@ -15,7 +15,7 @@ use control_plane_common::broker::{
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
 use control_plane_common::registry::{Agent, AgentCard, AgentRegistry, AgentVersion, Credentials};
-use control_plane_common::runtime::{RunControl, RunFilter, RunRecord};
+use control_plane_common::runtime::{RunControl, RunFilter, RunRecord, TranscriptEntry};
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{
@@ -65,6 +65,7 @@ pub fn router(services: Services) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/runs", get(list_runs))
         .route("/v1/runs/{id}", get(get_run))
+        .route("/v1/runs/{id}/transcript", get(run_transcript))
         .route("/v1/journal", get(read_journal))
         .with_state(Arc::new(services))
 }
@@ -366,6 +367,14 @@ async fn get_run(
     Path(id): Path<String>,
 ) -> Reply<RunRecord> {
     Ok(Json(s.runs.run(&caller, parse(&id)?).await?))
+}
+
+async fn run_transcript(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Reply<Vec<TranscriptEntry>> {
+    Ok(Json(s.runs.transcript(&caller, parse(&id)?).await?))
 }
 
 /// Exactly one of `chain`, `run` and `task`.

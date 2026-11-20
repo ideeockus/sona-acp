@@ -237,11 +237,7 @@ impl Inner {
 
     /// Starts Pi and talks to it.
     async fn drive(&self, run: &Run, token: &Secret, wake: &Notify, stop: &Stop) -> Result<Ended> {
-        let agent_dir = self
-            .config
-            .data_dir
-            .join("agents")
-            .join(run.card.alias.as_str());
+        let agent_dir = self.agent_dir(&run.card.alias);
         let work = agent_dir.join("work");
         let sessions = agent_dir.join("sessions");
         let pi_dir = run.dir.join("pi");

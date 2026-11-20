@@ -128,6 +128,18 @@ async fn an_agent_answers_the_operator_past_gateway() {
     assert!(runs[0]["usage"]["tokens_in"].as_u64().unwrap() > 0);
     assert_eq!(runs[0]["card_version"], 1);
 
+    // The transcript is what Pi kept of the Run: the prompt first, the reply sent.
+    let uri = format!("/v1/runs/{}/transcript", text(&runs[0]["run_id"]));
+    let transcript = operator.call("GET", &uri, None).await;
+    let steps = transcript.as_array().unwrap();
+    assert_eq!(steps[0]["kind"], "prompt");
+    assert!(
+        steps
+            .iter()
+            .any(|s| s["kind"] == "tool_call" && s["tool"] == "send_message"),
+        "{transcript}"
+    );
+
     // The answer waits unread in the operator's conversation with @coder.
     let conversations = operator.call("GET", "/v1/conversations", None).await;
     assert_eq!(conversations[0]["agent"], "coder");
