@@ -38,6 +38,15 @@ impl Message {
     }
 }
 
+/// The operator's conversation with one agent: every session in one thread (D102).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    pub agent: Alias,
+    pub last: Message,
+    /// Messages from the agent the operator has not opened yet.
+    pub unread: u32,
+}
+
 /// Unread messages of one session, handed to one Run (D57).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxBatch {
@@ -89,6 +98,22 @@ pub trait MessageBroker: Send + Sync {
     ///
     /// The cursor does not move: only a finished Run moves it (D49).
     async fn read_messages(&self, caller: &Caller, session: SessionKey) -> Result<Vec<Message>>;
+
+    /// The operator's conversations, the latest first (D102). Operator only.
+    async fn conversations(&self, caller: &Caller) -> Result<Vec<Conversation>>;
+
+    /// A page of the operator's conversation with `agent`, oldest first: the newest
+    /// messages, or those just before `before`. Operator only.
+    async fn conversation(
+        &self,
+        caller: &Caller,
+        agent: &Alias,
+        before: Option<MessageId>,
+    ) -> Result<Vec<Message>>;
+
+    /// Marks the conversation read up to and including `up_to`, as when the operator
+    /// opens it. Never moves back. Operator only.
+    async fn mark_read(&self, caller: &Caller, agent: &Alias, up_to: MessageId) -> Result<()>;
 }
 
 /// A stream of aliases of agents that just got a message (D86).

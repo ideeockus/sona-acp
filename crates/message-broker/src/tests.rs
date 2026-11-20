@@ -844,3 +844,92 @@ async fn a_disabled_agent_takes_no_mail_and_gets_the_waiting_mail_once_enabled()
         Err(Error::Forbidden(_))
     ));
 }
+
+#[tokio::test]
+async fn the_operator_sees_one_thread_per_agent_and_what_is_unread() {
+    let s = setup().await;
+    let asked = s
+        .broker
+        .send(&operator(), to("coder", "parse the config", None))
+        .await
+        .unwrap();
+    let chain = asked.correlation_id;
+    let coder = agent("coder", chain);
+    let reply = s
+        .broker
+        .send(&coder, to("user", "done", None))
+        .await
+        .unwrap();
+    let task = TaskId::new();
+    let question = s
+        .broker
+        .send(&coder, to("user", "which format?", Some(task)))
+        .await
+        .unwrap();
+    s.broker
+        .send(&operator(), to("manager", "status?", None))
+        .await
+        .unwrap();
+
+    let conversations = s.broker.conversations(&operator()).await.unwrap();
+    let summary: Vec<(&str, u32)> = conversations
+        .iter()
+        .map(|c| (c.agent.as_str(), c.unread))
+        .collect();
+    assert_eq!(summary, [("manager", 0), ("coder", 2)]);
+    assert_eq!(conversations[1].last.id, question.id);
+
+    // Every session of the agent in one thread, oldest first.
+    let thread = s
+        .broker
+        .conversation(&operator(), &alias("coder"), None)
+        .await
+        .unwrap();
+    let ids: Vec<MessageId> = thread.iter().map(|m| m.id).collect();
+    assert_eq!(ids, [asked.id, reply.id, question.id]);
+    assert_eq!(thread[2].task_id, Some(task));
+    let older = s
+        .broker
+        .conversation(&operator(), &alias("coder"), Some(question.id))
+        .await
+        .unwrap();
+    assert_eq!(older.len(), 2);
+
+    s.broker
+        .mark_read(&operator(), &alias("coder"), question.id)
+        .await
+        .unwrap();
+    // Marking an older message read never moves the cursor back.
+    s.broker
+        .mark_read(&operator(), &alias("coder"), reply.id)
+        .await
+        .unwrap();
+    let conversations = s.broker.conversations(&operator()).await.unwrap();
+    assert_eq!(conversations[1].unread, 0);
+}
+
+#[tokio::test]
+async fn conversations_are_the_operators_and_messages_must_belong_to_them() {
+    let s = setup().await;
+    let chain = CorrelationId::new();
+    let between_agents = s
+        .broker
+        .send(&agent("manager", chain), to("coder", "hi", None))
+        .await
+        .unwrap();
+    assert!(matches!(
+        s.broker
+            .mark_read(&operator(), &alias("coder"), between_agents.id)
+            .await,
+        Err(Error::NotFound(_))
+    ));
+    let coder = agent("coder", chain);
+    assert!(matches!(
+        s.broker.conversations(&coder).await,
+        Err(Error::Forbidden(_))
+    ));
+    assert!(matches!(
+        s.broker.conversation(&coder, &alias("manager"), None).await,
+        Err(Error::Forbidden(_))
+    ));
+}

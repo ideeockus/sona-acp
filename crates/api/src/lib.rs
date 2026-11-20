@@ -9,14 +9,18 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use control_plane_common::broker::{DeliveryControl, Message, MessageBroker, NewMessage};
+use control_plane_common::broker::{
+    Conversation, DeliveryControl, Message, MessageBroker, NewMessage,
+};
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
 use control_plane_common::registry::{Agent, AgentCard, AgentRegistry, AgentVersion, Credentials};
 use control_plane_common::runtime::{RunControl, RunFilter, RunRecord};
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
-use control_plane_common::{Alias, Caller, CorrelationId, Error, RunId, SessionKey, TaskId};
+use control_plane_common::{
+    Alias, Caller, CorrelationId, Error, MessageId, RunId, SessionKey, TaskId,
+};
 use extract::{ApiError, Authenticated, Body};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -40,6 +44,9 @@ pub fn router(services: Services) -> Router {
     Router::new()
         .route("/v1/messages", post(send_message))
         .route("/v1/sessions/{session}/messages", get(read_messages))
+        .route("/v1/conversations", get(conversations))
+        .route("/v1/conversations/{agent}/messages", get(conversation))
+        .route("/v1/conversations/{agent}/read", post(mark_read))
         .route("/v1/tasks", post(create_task).get(list_tasks))
         .route("/v1/tasks/{id}", get(get_task).patch(update_task))
         .route("/v1/gateway/check", post(check_tool))
@@ -99,6 +106,45 @@ async fn read_messages(
 ) -> Reply<Vec<Message>> {
     let session: SessionKey = session.parse().map_err(Error::InvalidInput)?;
     Ok(Json(s.broker.read_messages(&caller, session).await?))
+}
+
+async fn conversations(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+) -> Reply<Vec<Conversation>> {
+    Ok(Json(s.broker.conversations(&caller).await?))
+}
+
+#[derive(Deserialize)]
+struct PageQuery {
+    before: Option<String>,
+}
+
+async fn conversation(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(agent): Path<String>,
+    Query(query): Query<PageQuery>,
+) -> Reply<Vec<Message>> {
+    let agent: Alias = parse(&agent)?;
+    let before = query.before.as_deref().map(parse).transpose()?;
+    Ok(Json(s.broker.conversation(&caller, &agent, before).await?))
+}
+
+#[derive(Deserialize)]
+struct ReadUpTo {
+    up_to: MessageId,
+}
+
+async fn mark_read(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(agent): Path<String>,
+    Body(read): Body<ReadUpTo>,
+) -> Result<StatusCode, ApiError> {
+    let agent: Alias = parse(&agent)?;
+    s.broker.mark_read(&caller, &agent, read.up_to).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn create_task(

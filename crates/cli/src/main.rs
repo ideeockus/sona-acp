@@ -48,6 +48,14 @@ enum Command {
     },
     /// Unread messages of one session: `task-<id>` or `chain-<id>` (D78).
     Read { session: SessionKey },
+    /// Your conversations, latest first; with an agent, the thread with it (D102).
+    /// Showing a thread does not mark it read.
+    Conversations {
+        agent: Option<Alias>,
+        /// The page just before this message.
+        #[arg(long, requires = "agent")]
+        before: Option<MessageId>,
+    },
     /// Tasks.
     #[command(subcommand)]
     Tasks(TasksCommand),
@@ -317,6 +325,19 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         ),
         Command::Stop { chain } => (Method::POST, format!("/v1/chains/{chain}/stop"), None),
         Command::Resume { chain } => (Method::POST, format!("/v1/chains/{chain}/resume"), None),
+        Command::Conversations { agent: None, .. } => {
+            (Method::GET, "/v1/conversations".into(), None)
+        }
+        Command::Conversations {
+            agent: Some(agent),
+            before,
+        } => {
+            let mut path = format!("/v1/conversations/{}/messages", agent.as_str());
+            if let Some(before) = before {
+                path.push_str(&format!("?before={before}"));
+            }
+            (Method::GET, path, None)
+        }
         Command::Runs { agent, chain } => {
             let mut query = Vec::new();
             if let Some(agent) = agent {
@@ -485,6 +506,18 @@ mod tests {
         assert_eq!(request_of(&["tasks", "list"]).1, "/v1/tasks");
         let (_, path, _) = request_of(&["tasks", "list", "--status", "needs_human"]);
         assert_eq!(path, "/v1/tasks?status=needs_human");
+    }
+
+    #[test]
+    fn conversations_list_or_page_a_thread() {
+        assert_eq!(request_of(&["conversations"]).1, "/v1/conversations");
+        let before = MessageId::new();
+        let (_, path, _) = request_of(&["conversations", "coder", "--before", &before.to_string()]);
+        assert_eq!(
+            path,
+            format!("/v1/conversations/coder/messages?before={before}")
+        );
+        assert!(parse(&["conversations", "--before", &before.to_string()]).is_err());
     }
 
     #[test]

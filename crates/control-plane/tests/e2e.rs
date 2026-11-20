@@ -128,6 +128,21 @@ async fn an_agent_answers_the_operator_past_gateway() {
     assert!(runs[0]["usage"]["tokens_in"].as_u64().unwrap() > 0);
     assert_eq!(runs[0]["card_version"], 1);
 
+    // The answer waits unread in the operator's conversation with @coder.
+    let conversations = operator.call("GET", "/v1/conversations", None).await;
+    assert_eq!(conversations[0]["agent"], "coder");
+    assert_eq!(conversations[0]["unread"], 1);
+    let last = conversations[0]["last"]["id"].clone();
+    operator
+        .call(
+            "POST",
+            "/v1/conversations/coder/read",
+            Some(json!({ "up_to": last })),
+        )
+        .await;
+    let conversations = operator.call("GET", "/v1/conversations", None).await;
+    assert_eq!(conversations[0]["unread"], 0);
+
     // Afterwards the agent is idle with nothing left to deliver.
     let status = operator.call("GET", "/v1/status", None).await;
     assert_eq!(

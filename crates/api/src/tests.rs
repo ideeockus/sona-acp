@@ -134,6 +134,26 @@ impl MessageBroker for Broker {
     async fn read_messages(&self, _: &Caller, _: SessionKey) -> Result<Vec<Message>> {
         Ok(Vec::new())
     }
+    async fn conversations(&self, caller: &Caller) -> Result<Vec<Conversation>> {
+        operator_only(caller)?;
+        Ok(Vec::new())
+    }
+    async fn conversation(
+        &self,
+        caller: &Caller,
+        agent: &Alias,
+        before: Option<MessageId>,
+    ) -> Result<Vec<Message>> {
+        operator_only(caller)?;
+        self.callers.lock().unwrap().push(caller.clone());
+        assert_eq!((agent.as_str(), before.is_some()), ("coder", true));
+        Ok(Vec::new())
+    }
+    async fn mark_read(&self, caller: &Caller, agent: &Alias, _: MessageId) -> Result<()> {
+        operator_only(caller)?;
+        assert_eq!(agent.as_str(), "coder");
+        Ok(())
+    }
 }
 
 /// Fails every call with an internal error that must not leak.
@@ -725,4 +745,39 @@ async fn tasks_are_listed_by_status() {
         (status, body["kind"].as_str()),
         (StatusCode::BAD_REQUEST, Some("invalid_input"))
     );
+}
+
+#[tokio::test]
+async fn conversations_page_and_mark_read() {
+    let s = setup();
+    let (status, body) = call(
+        &s.app,
+        Method::GET,
+        "/v1/conversations",
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
+    let before = MessageId::new();
+    let (status, _) = call(
+        &s.app,
+        Method::GET,
+        &format!("/v1/conversations/coder/messages?before={before}"),
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &s.app,
+        Method::POST,
+        "/v1/conversations/coder/read",
+        Some(OPERATOR),
+        Some(json!({ "up_to": before })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(&s.app, Method::GET, "/v1/conversations", Some(AGENT), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
