@@ -109,6 +109,10 @@ pub trait TaskManager: Send + Sync {
 
     /// Participants and the operator only. Closing is for the creator and the operator.
     async fn update_task(&self, caller: &Caller, id: TaskId, update: TaskUpdate) -> Result<Task>;
+
+    /// The newest tasks, all or of one status, newest first. The operator only: an
+    /// agent knows its tasks from its messages.
+    async fn list_tasks(&self, caller: &Caller, status: Option<TaskStatus>) -> Result<Vec<Task>>;
 }
 
 #[cfg(test)]

@@ -154,6 +154,11 @@ impl TaskManager for BrokenTasks {
     async fn update_task(&self, _: &Caller, _: TaskId, _: TaskUpdate) -> Result<Task> {
         unimplemented!()
     }
+    async fn list_tasks(&self, caller: &Caller, status: Option<TaskStatus>) -> Result<Vec<Task>> {
+        operator_only(caller)?;
+        assert_eq!(status, Some(TaskStatus::NeedsHuman));
+        Ok(Vec::new())
+    }
 }
 
 struct DenyBash;
@@ -694,4 +699,30 @@ async fn runs_are_listed_by_agent_and_chain() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _) = call(&s.app, Method::GET, "/v1/runs", Some(AGENT), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tasks_are_listed_by_status() {
+    let s = setup();
+    let (status, body) = call(
+        &s.app,
+        Method::GET,
+        "/v1/tasks?status=needs_human",
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
+    let (status, body) = call(
+        &s.app,
+        Method::GET,
+        "/v1/tasks?status=waiting",
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, body["kind"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_input"))
+    );
 }

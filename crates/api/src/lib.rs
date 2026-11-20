@@ -15,7 +15,7 @@ use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
 use control_plane_common::registry::{Agent, AgentCard, AgentRegistry, AgentVersion, Credentials};
 use control_plane_common::runtime::{RunControl, RunFilter, RunRecord};
 use control_plane_common::status::{AgentStatus, Status};
-use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskUpdate, TaskView};
+use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{Alias, Caller, CorrelationId, Error, RunId, SessionKey, TaskId};
 use extract::{ApiError, Authenticated, Body};
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,7 @@ pub fn router(services: Services) -> Router {
     Router::new()
         .route("/v1/messages", post(send_message))
         .route("/v1/sessions/{session}/messages", get(read_messages))
-        .route("/v1/tasks", post(create_task))
+        .route("/v1/tasks", post(create_task).get(list_tasks))
         .route("/v1/tasks/{id}", get(get_task).patch(update_task))
         .route("/v1/gateway/check", post(check_tool))
         .route("/v1/agents", post(create_agent).get(list_agents))
@@ -108,6 +108,26 @@ async fn create_task(
 ) -> Result<(StatusCode, Json<Task>), ApiError> {
     let created = s.tasks.create_task(&caller, task).await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+#[derive(Deserialize)]
+struct TasksQuery {
+    status: Option<String>,
+}
+
+async fn list_tasks(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Query(query): Query<TasksQuery>,
+) -> Reply<Vec<Task>> {
+    let status = query
+        .status
+        .map(|status| {
+            serde_json::from_value::<TaskStatus>(serde_json::Value::String(status.clone()))
+                .map_err(|_| Error::InvalidInput(format!("invalid status {status:?}")))
+        })
+        .transpose()?;
+    Ok(Json(s.tasks.list_tasks(&caller, status).await?))
 }
 
 async fn get_task(

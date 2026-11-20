@@ -128,6 +128,11 @@ enum TasksCommand {
     Get {
         id: TaskId,
     },
+    /// The newest tasks, newest first; `--status needs_human` shows what waits for you.
+    List {
+        #[arg(long, value_parser = parse_status)]
+        status: Option<TaskStatus>,
+    },
     Update {
         id: TaskId,
         /// open, in_progress, needs_human, done or cancelled (D53).
@@ -268,6 +273,13 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
             (Method::POST, "/v1/tasks".into(), Some(json(task)))
         }
         Command::Tasks(TasksCommand::Get { id }) => (Method::GET, format!("/v1/tasks/{id}"), None),
+        Command::Tasks(TasksCommand::List { status }) => {
+            let path = match status {
+                Some(status) => format!("/v1/tasks?status={}", json(status).as_str().unwrap_or("")),
+                None => "/v1/tasks".to_owned(),
+            };
+            (Method::GET, path, None)
+        }
         Command::Tasks(TasksCommand::Update {
             id,
             status,
@@ -466,6 +478,13 @@ mod tests {
             (method, path.as_str()),
             (Method::DELETE, "/v1/agents/coder")
         );
+    }
+
+    #[test]
+    fn tasks_are_listed_by_status() {
+        assert_eq!(request_of(&["tasks", "list"]).1, "/v1/tasks");
+        let (_, path, _) = request_of(&["tasks", "list", "--status", "needs_human"]);
+        assert_eq!(path, "/v1/tasks?status=needs_human");
     }
 
     #[test]

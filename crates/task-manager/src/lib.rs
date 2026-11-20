@@ -13,6 +13,9 @@ use sqlx::{SqliteExecutor, SqlitePool};
 use std::str::FromStr;
 use std::sync::Arc;
 
+/// The newest tasks a listing returns.
+const LIST_LIMIT: i64 = 200;
+
 pub struct SqliteTaskManager {
     pool: SqlitePool,
     directory: Arc<dyn AgentDirectory>,
@@ -38,6 +41,22 @@ impl SqliteTaskManager {
             credentials,
             journal,
         })
+    }
+
+    async fn list(&self, status: Option<TaskStatus>) -> Result<Vec<Task>> {
+        let status = status.map(|s| to_json_str(&s)).transpose()?;
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, title, context, status, creator, created_at, parent_id,
+                    assignee, members, deadline, result
+             FROM tasks WHERE ?1 IS NULL OR status = ?1
+             ORDER BY created_at DESC LIMIT ?2",
+        )
+        .bind(status)
+        .bind(LIST_LIMIT)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        rows.into_iter().map(Row::into_task).collect()
     }
 
     async fn task(&self, id: TaskId) -> Result<Task> {
@@ -236,6 +255,16 @@ impl TaskManager for SqliteTaskManager {
         }
         tx.commit().await.map_err(internal)?;
         Ok(task)
+    }
+
+    async fn list_tasks(&self, caller: &Caller, status: Option<TaskStatus>) -> Result<Vec<Task>> {
+        if !matches!(caller, Caller::Operator { .. }) {
+            return Err(Error::Forbidden(format!(
+                "{} may not list tasks",
+                caller.alias()
+            )));
+        }
+        self.list(status).await
     }
 }
 

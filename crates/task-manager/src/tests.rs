@@ -381,3 +381,28 @@ async fn adapters_are_not_supported_yet() {
         Err(Error::Forbidden(_))
     ));
 }
+
+#[tokio::test]
+async fn the_operator_lists_tasks_by_status_newest_first() {
+    let m = manager().await;
+    let first = created(&m).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let second = created(&m).await;
+    m.update_task(&agent("coder"), second.id, status(TaskStatus::NeedsHuman))
+        .await
+        .unwrap();
+
+    let all = m.list_tasks(&operator(), None).await.unwrap();
+    let ids: Vec<TaskId> = all.iter().map(|t| t.id).collect();
+    assert_eq!(ids, [second.id, first.id]);
+    let waiting = m
+        .list_tasks(&operator(), Some(TaskStatus::NeedsHuman))
+        .await
+        .unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].id, second.id);
+    assert!(matches!(
+        m.list_tasks(&agent("coder"), None).await,
+        Err(Error::Forbidden(_))
+    ));
+}
