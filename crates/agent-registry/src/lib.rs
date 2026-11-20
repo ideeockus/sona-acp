@@ -50,6 +50,7 @@ impl SqliteRegistry {
 impl AgentRegistry for SqliteRegistry {
     async fn create_agent(&self, caller: &Caller, card: AgentCard) -> Result<()> {
         require_operator(caller)?;
+        let card = valid(card)?;
         let json = serde_json::to_string(&card).map_err(|e| Error::Internal(e.to_string()))?;
         insert_principal(&self.pool, &card.alias, "agent", Some(json)).await
     }
@@ -214,8 +215,18 @@ fn internal(error: sqlx::Error) -> Error {
     Error::Internal(error.to_string())
 }
 
+/// A card as stored before hues came gets its hue from the alias.
 fn decode_card(card: &str) -> Result<AgentCard> {
-    serde_json::from_str(card).map_err(|e| Error::Internal(e.to_string()))
+    let card: AgentCard = serde_json::from_str(card).map_err(|e| Error::Internal(e.to_string()))?;
+    Ok(card.with_hue())
+}
+
+/// The card to store, with its hue set.
+fn valid(card: AgentCard) -> Result<AgentCard> {
+    if card.hue.is_some_and(|hue| hue >= 360) {
+        return Err(Error::InvalidInput("hue must be 0–359".to_owned()));
+    }
+    Ok(card.with_hue())
 }
 
 fn parse<T: FromStr>(value: &str) -> Result<T>

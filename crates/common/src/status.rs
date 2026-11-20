@@ -66,6 +66,7 @@ mod tests {
             access: Vec::new(),
             allow_message_to: Vec::new(),
             prompt: String::new(),
+            hue: None,
         }
     }
 

@@ -26,6 +26,10 @@ pub struct AgentCard {
     pub allow_message_to: Vec<Alias>,
     /// Instructions for the agent itself.
     pub prompt: String,
+    /// The agent's color in the UI, 0–359 (D101). Registry fills it from the alias
+    /// when not given, so it comes back always set.
+    #[serde(default)]
+    pub hue: Option<u16>,
 }
 
 /// A group of tools granted together (D99). The one place that says which tools a
@@ -52,11 +56,26 @@ impl Access {
     }
 }
 
+/// A hue from the alias: the same agent gets the same color until someone repaints it.
+/// FNV-1a, fixed here because a change would repaint agents that never chose a color.
+pub fn default_hue(alias: &Alias) -> u16 {
+    let hash = alias.as_str().bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    (hash % 360) as u16
+}
+
 /// Tools every agent has, whatever its grant (D94). A prompt only says that mail
 /// arrived (D80), so an agent without `read_messages` could not learn why it woke.
 pub const ALWAYS_GRANTED: &[&str] = &["read_messages"];
 
 impl AgentCard {
+    /// The card with its hue set: as given, or derived from the alias.
+    pub fn with_hue(mut self) -> Self {
+        self.hue.get_or_insert_with(|| default_hue(&self.alias));
+        self
+    }
+
     /// The tools the agent may use: what is always granted, then its groups'.
     pub fn tools(&self) -> Vec<&'static str> {
         let mut tools = ALWAYS_GRANTED.to_vec();
@@ -165,6 +184,7 @@ mod tests {
             access: vec![Access::ReadFiles, Access::SendMessages],
             allow_message_to: Vec::new(),
             prompt: String::new(),
+            hue: None,
         };
         assert_eq!(
             card.tools(),
@@ -181,6 +201,17 @@ mod tests {
         assert!(card.may_use("grep"));
         assert!(!card.may_use("bash"));
         assert!(!card.may_use("write"));
+    }
+
+    #[test]
+    fn a_hue_not_given_comes_from_the_alias() {
+        let alias: Alias = "coder".parse().unwrap();
+        assert_eq!(default_hue(&alias), default_hue(&alias));
+        assert!(default_hue(&alias) < 360);
+        assert_ne!(
+            default_hue(&alias),
+            default_hue(&"manager".parse().unwrap())
+        );
     }
 
     #[test]

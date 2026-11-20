@@ -22,6 +22,7 @@ impl AgentDirectory for Directory {
             access: vec![Access::ReadFiles, Access::WriteFiles, Access::SendMessages],
             allow_message_to: Vec::new(),
             prompt: String::new(),
+            hue: None,
         })
     }
 }

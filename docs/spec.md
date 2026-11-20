@@ -104,6 +104,7 @@ Workdir живёт дольше Run. Это локальный рабочий д
   "title": "Реализует задачи по коду",
   "model": { "provider": "anthropic", "id": "<модель>" },
   "access": ["read_files", "write_files", "tasks", "send_messages"],
+  "hue": 25,
   "allow_message_to": ["manager"],
   "connectors": ["gitlab"],
   "limits": { "max_turns_per_run": 50, "max_tokens_per_run": 200000, "max_wakes_per_hour": 20 }

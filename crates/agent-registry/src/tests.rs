@@ -1,5 +1,5 @@
 use super::*;
-use control_plane_common::registry::{Access, ModelRef};
+use control_plane_common::registry::{Access, ModelRef, default_hue};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 async fn memory_pool() -> SqlitePool {
@@ -38,6 +38,7 @@ fn card(name: &str) -> AgentCard {
         access: vec![Access::ReadFiles],
         allow_message_to: vec![alias("manager")],
         prompt: "You write code.".to_owned(),
+        hue: None,
     }
 }
 
@@ -57,10 +58,10 @@ async fn created_agent_can_be_read_back() {
         .get_agent(&operator(), &alias("coder"))
         .await
         .unwrap();
-    assert_eq!(read, card("coder"));
+    assert_eq!(read, card("coder").with_hue());
     assert_eq!(
         registry.agent(&alias("coder")).await.unwrap(),
-        card("coder")
+        card("coder").with_hue()
     );
 }
 
@@ -269,4 +270,30 @@ async fn cards_with_single_tools_move_to_groups() {
         access,
         [Access::ReadFiles, Access::SendMessages, Access::WriteFiles]
     );
+}
+
+#[tokio::test]
+async fn a_card_gets_a_hue_from_its_alias_unless_given_one() {
+    let registry = registry_with_coder().await;
+    let coder = registry.agent(&alias("coder")).await.unwrap();
+    assert_eq!(coder.hue, Some(default_hue(&alias("coder"))));
+
+    let painted = AgentCard {
+        hue: Some(25),
+        ..card("painter")
+    };
+    registry.create_agent(&operator(), painted).await.unwrap();
+    assert_eq!(
+        registry.agent(&alias("painter")).await.unwrap().hue,
+        Some(25)
+    );
+
+    let invalid = AgentCard {
+        hue: Some(360),
+        ..card("invalid")
+    };
+    assert!(matches!(
+        registry.create_agent(&operator(), invalid).await,
+        Err(Error::InvalidInput(_))
+    ));
 }

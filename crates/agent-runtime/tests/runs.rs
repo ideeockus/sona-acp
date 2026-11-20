@@ -44,6 +44,7 @@ impl AgentDirectory for Directory {
             access: vec![Access::ReadFiles, Access::SendMessages],
             allow_message_to,
             prompt: format!("You are {alias}."),
+            hue: None,
         })
     }
 }

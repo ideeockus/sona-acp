@@ -86,6 +86,7 @@ fn card(name: &str, allow_message_to: &[&str]) -> AgentCard {
         access: Vec::new(),
         allow_message_to: allow_message_to.iter().map(|a| alias(a)).collect(),
         prompt: String::new(),
+        hue: None,
     }
 }
 
