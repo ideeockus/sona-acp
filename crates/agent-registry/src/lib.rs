@@ -5,11 +5,15 @@ mod token;
 use async_trait::async_trait;
 use control_plane_common::registry::{
     Agent, AgentCard, AgentDirectory, AgentRegistry, AgentState, AgentVersion, Credentials, Secret,
+    Session,
 };
 use control_plane_common::{Alias, Caller, CorrelationId, Error, Result, RunId, Timestamp};
 use sqlx::{SqliteExecutor, SqlitePool};
 use std::str::FromStr;
-use token::{OPERATOR_PREFIX, RUN_PREFIX, TOKEN_HEX_LEN};
+use token::{OPERATOR_PREFIX, RUN_PREFIX, SESSION_PREFIX, TOKEN_HEX_LEN};
+
+/// How long a browser session lasts, counted from login (D103).
+const SESSION_LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 pub struct SqliteRegistry {
     pool: SqlitePool,
@@ -268,6 +272,56 @@ impl Credentials for SqliteRegistry {
             }
         }
         Ok(false)
+    }
+
+    async fn open_session(&self, credential: &str) -> Result<Session> {
+        let caller = self.authenticate(credential).await?;
+        if !matches!(caller, Caller::Operator { .. }) {
+            return Err(Error::Forbidden(format!(
+                "{} is not the operator",
+                caller.alias()
+            )));
+        }
+        let now = Timestamp::now().as_unix_millis();
+        // Ended sessions are cleared whenever a new one opens.
+        sqlx::query("DELETE FROM sessions WHERE expires_at <= ?")
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        let secret = token::generate(SESSION_PREFIX);
+        let expires_at = Timestamp::from_unix_millis(now + SESSION_LIFETIME_MS)?;
+        sqlx::query("INSERT INTO sessions (hash, alias, expires_at) VALUES (?, ?, ?)")
+            .bind(token::hash(secret.expose()))
+            .bind(caller.alias().as_str())
+            .bind(expires_at.as_unix_millis())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(Session { secret, expires_at })
+    }
+
+    async fn session_caller(&self, session: &str) -> Result<Caller> {
+        let alias: Option<String> =
+            sqlx::query_scalar("SELECT alias FROM sessions WHERE hash = ? AND expires_at > ?")
+                .bind(token::hash(session))
+                .bind(Timestamp::now().as_unix_millis())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        let alias = alias.ok_or(Error::Unauthenticated)?;
+        Ok(Caller::Operator {
+            alias: parse(&alias)?,
+        })
+    }
+
+    async fn close_session(&self, session: &str) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE hash = ?")
+            .bind(token::hash(session))
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
     }
 }
 

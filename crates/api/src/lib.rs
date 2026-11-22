@@ -6,7 +6,9 @@
 mod extract;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::header::SET_COOKIE;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use control_plane_common::broker::{
@@ -19,9 +21,9 @@ use control_plane_common::runtime::{RunControl, RunFilter, RunRecord, Transcript
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{
-    Alias, Caller, CorrelationId, Error, MessageId, RunId, SessionKey, TaskId,
+    Alias, Caller, CorrelationId, Error, MessageId, RunId, SessionKey, TaskId, Timestamp,
 };
-use extract::{ApiError, Authenticated, Body};
+use extract::{ApiError, Authenticated, Body, SESSION_COOKIE, session_cookie};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -42,6 +44,12 @@ type Reply<T> = Result<Json<T>, ApiError>;
 
 pub fn router(services: Services) -> Router {
     Router::new()
+        .route(
+            "/v1/session",
+            post(open_session)
+                .get(current_session)
+                .delete(close_session),
+        )
         .route("/v1/messages", post(send_message))
         .route("/v1/sessions/{session}/messages", get(read_messages))
         .route("/v1/conversations", get(conversations))
@@ -107,6 +115,68 @@ async fn read_messages(
 ) -> Reply<Vec<Message>> {
     let session: SessionKey = session.parse().map_err(Error::InvalidInput)?;
     Ok(Json(s.broker.read_messages(&caller, session).await?))
+}
+
+#[derive(Deserialize)]
+struct Login {
+    credential: String,
+}
+
+/// Who is logged in, and until when.
+#[derive(Serialize)]
+struct SessionInfo {
+    alias: Alias,
+    expires_at: Option<Timestamp>,
+}
+
+/// Exchanges the operator's credential for a session cookie (D103). The credential
+/// itself never reaches the browser's storage.
+async fn open_session(
+    State(s): Shared,
+    Body(login): Body<Login>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = s.credentials.open_session(&login.credential).await?;
+    let alias = s
+        .credentials
+        .session_caller(session.secret.expose())
+        .await?
+        .alias()
+        .clone();
+    let max_age = (session.expires_at.as_unix_millis() - Timestamp::now().as_unix_millis()) / 1000;
+    let cookie = session_cookie_header(session.secret.expose(), max_age);
+    let info = SessionInfo {
+        alias,
+        expires_at: Some(session.expires_at),
+    };
+    Ok((StatusCode::CREATED, [(SET_COOKIE, cookie)], Json(info)))
+}
+
+async fn current_session(Authenticated(caller): Authenticated) -> Reply<SessionInfo> {
+    Ok(Json(SessionInfo {
+        alias: caller.alias().clone(),
+        expires_at: None,
+    }))
+}
+
+/// Ends the session, even an expired one, and clears the cookie.
+async fn close_session(
+    State(s): Shared,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    if let Some(session) = session_cookie(&headers) {
+        s.credentials.close_session(session).await?;
+    }
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(SET_COOKIE, session_cookie_header("", 0))],
+    ))
+}
+
+/// Only our API reads it, never a script, and only over HTTPS from our own pages.
+fn session_cookie_header(value: &str, max_age: i64) -> String {
+    format!(
+        "{SESSION_COOKIE}={value}; Path=/v1; HttpOnly; Secure; SameSite=Strict; Max-Age={max_age}"
+    )
 }
 
 async fn conversations(

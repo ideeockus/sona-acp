@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
 use control_plane_common::broker::{InboxStatus, StoppedChain};
-use control_plane_common::registry::Secret;
+use control_plane_common::registry::{Secret, Session};
 use control_plane_common::runtime::{ActiveRun, RunFilter, RunRecord, TranscriptEntry};
 use control_plane_common::{Caller, MessageId, Result, Timestamp};
 use http_body_util::BodyExt;
@@ -13,6 +13,7 @@ use tower::ServiceExt;
 
 const OPERATOR: &str = "sona_plane_op_test";
 const AGENT: &str = "sona_plane_rt_test";
+const SESSION: &str = "sona_plane_ss_test";
 
 fn alias(name: &str) -> Alias {
     name.parse().unwrap()
@@ -54,6 +55,28 @@ impl Credentials for Tokens {
     }
     async fn contains_active_run_token(&self, _: &str) -> Result<bool> {
         unimplemented!()
+    }
+    async fn open_session(&self, credential: &str) -> Result<Session> {
+        match self.authenticate(credential).await? {
+            Caller::Operator { .. } => Ok(Session {
+                secret: Secret::new(SESSION.to_owned()),
+                expires_at: Timestamp::from_unix_millis(
+                    Timestamp::now().as_unix_millis() + 3_600_000,
+                )?,
+            }),
+            _ => Err(Error::Forbidden("not the operator".to_owned())),
+        }
+    }
+    async fn session_caller(&self, session: &str) -> Result<Caller> {
+        match session {
+            SESSION => Ok(Caller::Operator {
+                alias: alias("user"),
+            }),
+            _ => Err(Error::Unauthenticated),
+        }
+    }
+    async fn close_session(&self, _: &str) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -794,4 +817,85 @@ async fn a_transcript_is_for_the_operator() {
     assert_eq!((status, body), (StatusCode::OK, json!([])));
     let (status, _) = call(&s.app, Method::GET, &uri, Some(AGENT), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A request as the browser sends it: the session cookie and, maybe, an Origin.
+async fn browser(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    origin: Option<&str>,
+) -> axum::response::Response {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", "dash.example.com")
+        .header("cookie", format!("theme=dark; sona_session={SESSION}"));
+    if let Some(origin) = origin {
+        request = request.header("origin", origin);
+    }
+    app.clone()
+        .oneshot(request.body(HttpBody::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_credential_opens_a_session_cookie() {
+    let s = setup();
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/session")
+        .header("content-type", "application/json")
+        .body(HttpBody::from(
+            json!({ "credential": OPERATOR }).to_string(),
+        ))
+        .unwrap();
+    let response = s.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let cookie = response.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        cookie.starts_with(&format!("sona_session={SESSION};")),
+        "{cookie}"
+    );
+    for attribute in ["HttpOnly", "Secure", "SameSite=Strict", "Path=/v1"] {
+        assert!(cookie.contains(attribute), "{cookie}");
+    }
+
+    let (status, _) = call(
+        &s.app,
+        Method::POST,
+        "/v1/session",
+        None,
+        Some(json!({ "credential": AGENT })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_session_reads_freely_but_changes_only_from_our_origin() {
+    let s = setup();
+    let response = browser(&s.app, Method::GET, "/v1/session", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let uri = format!("/v1/chains/{}/stop", CorrelationId::new());
+    for origin in [
+        None,
+        Some("https://evil.example"),
+        Some("https://dash.example.com.evil"),
+    ] {
+        let response = browser(&s.app, Method::POST, &uri, origin).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{origin:?}");
+    }
+    let response = browser(&s.app, Method::POST, &uri, Some("https://dash.example.com")).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = browser(&s.app, Method::DELETE, "/v1/session", None).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let cleared = response.headers()["set-cookie"].to_str().unwrap();
+    assert!(cleared.starts_with("sona_session=;") && cleared.contains("Max-Age=0"));
 }

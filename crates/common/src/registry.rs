@@ -144,6 +144,13 @@ impl fmt::Debug for Secret {
     }
 }
 
+/// A browser session: its secret for the cookie and when it ends (D103).
+#[derive(Debug)]
+pub struct Session {
+    pub secret: Secret,
+    pub expires_at: Timestamp,
+}
+
 /// What the operator calls. Exposed through the external API.
 #[async_trait]
 pub trait AgentRegistry: Send + Sync {
@@ -208,6 +215,15 @@ pub trait Credentials: Send + Sync {
 
     /// Whether `content` holds an active Run token, which must not leave the agent (D24).
     async fn contains_active_run_token(&self, content: &str) -> Result<bool>;
+
+    /// Opens a browser session for the operator, who proves it with the credential
+    /// (D103). The session is a credential of its own, shown once, for a cookie.
+    async fn open_session(&self, credential: &str) -> Result<Session>;
+
+    /// The caller of a session. `Unauthenticated` when it is unknown or expired.
+    async fn session_caller(&self, session: &str) -> Result<Caller>;
+
+    async fn close_session(&self, session: &str) -> Result<()>;
 }
 
 #[cfg(test)]

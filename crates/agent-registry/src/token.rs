@@ -6,6 +6,7 @@ use std::fmt::Write;
 
 pub const RUN_PREFIX: &str = "sona_plane_rt_";
 pub const OPERATOR_PREFIX: &str = "sona_plane_op_";
+pub const SESSION_PREFIX: &str = "sona_plane_ss_";
 pub const TOKEN_HEX_LEN: usize = 64;
 
 pub fn generate(prefix: &str) -> Secret {

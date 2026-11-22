@@ -482,3 +482,61 @@ async fn only_the_operator_disables_and_deletes() {
         assert!(matches!(denied, Err(Error::Forbidden(_))));
     }
 }
+
+#[tokio::test]
+async fn the_operator_opens_a_session_with_the_credential() {
+    let pool = memory_pool().await;
+    let registry = SqliteRegistry::new(pool.clone()).await.unwrap();
+    let credential = registry.create_operator(&alias("user")).await.unwrap();
+
+    let session = registry.open_session(credential.expose()).await.unwrap();
+    assert!(session.secret.expose().starts_with("sona_plane_ss_"));
+    assert_eq!(
+        registry
+            .session_caller(session.secret.expose())
+            .await
+            .unwrap(),
+        operator()
+    );
+    // A session is for the cookie only, never a bearer credential.
+    assert!(matches!(
+        registry.authenticate(session.secret.expose()).await,
+        Err(Error::Unauthenticated)
+    ));
+
+    registry
+        .close_session(session.secret.expose())
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry.session_caller(session.secret.expose()).await,
+        Err(Error::Unauthenticated)
+    ));
+
+    let ended = registry.open_session(credential.expose()).await.unwrap();
+    sqlx::query("UPDATE sessions SET expires_at = 0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry.session_caller(ended.secret.expose()).await,
+        Err(Error::Unauthenticated)
+    ));
+}
+
+#[tokio::test]
+async fn only_the_operator_credential_opens_a_session() {
+    let registry = registry_with_coder().await;
+    let token = registry
+        .issue_run_token(&alias("coder"), RunId::new(), CorrelationId::new())
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry.open_session(token.expose()).await,
+        Err(Error::Forbidden(_))
+    ));
+    assert!(matches!(
+        registry.open_session("sona_plane_op_nope").await,
+        Err(Error::Unauthenticated)
+    ));
+}
