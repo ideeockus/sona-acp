@@ -7,10 +7,14 @@
   import Login from "./screens/Login.svelte";
   import AgentForm from "./screens/AgentForm.svelte";
   import AgentPage from "./screens/AgentPage.svelte";
+  import Journal from "./screens/Journal.svelte";
   import Messages from "./screens/Messages.svelte";
   import Overview from "./screens/Overview.svelte";
   import Registry from "./screens/Registry.svelte";
   import RunPage from "./screens/RunPage.svelte";
+  import Settings from "./screens/Settings.svelte";
+  import TaskPage from "./screens/TaskPage.svelte";
+  import Tasks from "./screens/Tasks.svelte";
 
   let checked = $state(false);
   let unread = $state(0);
@@ -56,6 +60,14 @@
         <Messages />
       {:else if match("/messages/:alias")}
         {#key route.path}<Messages alias={match("/messages/:alias")!.alias} />{/key}
+      {:else if match("/journal")}
+        <Journal />
+      {:else if match("/tasks")}
+        <Tasks />
+      {:else if match("/tasks/:id")}
+        {#key route.path}<TaskPage id={match("/tasks/:id")!.id!} />{/key}
+      {:else if match("/settings")}
+        <Settings />
       {:else if match("/runs/:id")}
         {#key route.path}<RunPage id={match("/runs/:id")!.id!} />{/key}
       {:else}

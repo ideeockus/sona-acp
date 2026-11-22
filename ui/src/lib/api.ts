@@ -34,6 +34,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
+  request: <T = null>(method: string, path: string, body?: unknown) => request<T>(method, path, body),
   get: <T>(path: string) => request<T>("GET", path),
   post: <T = null>(path: string, body?: unknown) => request<T>("POST", path, body),
   put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),

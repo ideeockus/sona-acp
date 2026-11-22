@@ -124,6 +124,9 @@ p {
   font-weight: 400;
   color: var(--text);
 }
+.numbers b.live {
+  color: var(--accent-text);
+}
 
 /* Panels have square corners; only interactive things are rounded. */
 .panel {
