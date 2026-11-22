@@ -27,7 +27,14 @@ export function sessionLabel(session: SessionKey): string {
 }
 
 export function dollars(micros: number): string {
+  if (micros === 0) return "$0";
   return `$${(micros / 1e6).toFixed(micros < 10_000 ? 4 : 2)}`;
+}
+
+/** The first line, for a cell; the whole text goes in the title. */
+export function firstLine(text: string): string {
+  const line = text.split("\n", 1)[0] ?? "";
+  return line.length > 90 ? `${line.slice(0, 90)}…` : line;
 }
 
 export function tokens(count: number): string {

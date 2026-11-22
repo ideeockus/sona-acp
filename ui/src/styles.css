@@ -1,5 +1,7 @@
-/* Tokens from docs/ui.md. The dark theme is the main one. */
-:root {
+/* Tokens from docs/ui.md. The dark theme is the main one. Any element may take a
+   theme of its own with data-theme, as the color samples do. */
+:root,
+[data-theme="dark"] {
   --bg: #0b0806;
   --surface: #110d0a;
   --line: #241c16;
@@ -21,7 +23,7 @@
   color-scheme: dark;
 }
 
-:root[data-theme="light"] {
+[data-theme="light"] {
   --bg: #f6f2ec;
   --surface: #fffdf9;
   --line: #e7ded3;

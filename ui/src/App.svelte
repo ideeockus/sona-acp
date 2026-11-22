@@ -5,7 +5,11 @@
   import { loadSession, session } from "./lib/session.svelte";
   import type { Conversation } from "./lib/types";
   import Login from "./screens/Login.svelte";
+  import AgentForm from "./screens/AgentForm.svelte";
+  import AgentPage from "./screens/AgentPage.svelte";
   import Overview from "./screens/Overview.svelte";
+  import Registry from "./screens/Registry.svelte";
+  import RunPage from "./screens/RunPage.svelte";
 
   let checked = $state(false);
   let unread = $state(0);
@@ -39,6 +43,16 @@
     <main>
       {#if match("/")}
         <Overview />
+      {:else if match("/agents")}
+        <Registry />
+      {:else if match("/agents/new")}
+        <AgentForm />
+      {:else if match("/agents/:alias/edit")}
+        {#key route.path}<AgentForm alias={match("/agents/:alias/edit")!.alias} />{/key}
+      {:else if match("/agents/:alias")}
+        {#key route.path}<AgentPage alias={match("/agents/:alias")!.alias!} />{/key}
+      {:else if match("/runs/:id")}
+        {#key route.path}<RunPage id={match("/runs/:id")!.id!} />{/key}
       {:else}
         <header class="screen-header"><h1>Not found</h1></header>
         <p class="empty">Nothing lives at {route.path}. <a class="live" href="/">Overview</a></p>
