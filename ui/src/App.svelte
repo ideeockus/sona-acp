@@ -7,6 +7,7 @@
   import Login from "./screens/Login.svelte";
   import AgentForm from "./screens/AgentForm.svelte";
   import AgentPage from "./screens/AgentPage.svelte";
+  import Messages from "./screens/Messages.svelte";
   import Overview from "./screens/Overview.svelte";
   import Registry from "./screens/Registry.svelte";
   import RunPage from "./screens/RunPage.svelte";
@@ -51,6 +52,10 @@
         {#key route.path}<AgentForm alias={match("/agents/:alias/edit")!.alias} />{/key}
       {:else if match("/agents/:alias")}
         {#key route.path}<AgentPage alias={match("/agents/:alias")!.alias!} />{/key}
+      {:else if match("/messages")}
+        <Messages />
+      {:else if match("/messages/:alias")}
+        {#key route.path}<Messages alias={match("/messages/:alias")!.alias} />{/key}
       {:else if match("/runs/:id")}
         {#key route.path}<RunPage id={match("/runs/:id")!.id!} />{/key}
       {:else}
