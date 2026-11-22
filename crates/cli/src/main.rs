@@ -157,8 +157,9 @@ enum TasksCommand {
     },
 }
 
+/// At most one filter; none shows the latest entries.
 #[derive(Args)]
-#[group(required = true, multiple = false)]
+#[group(required = false, multiple = false)]
 struct JournalArgs {
     #[arg(long)]
     chain: Option<CorrelationId>,
@@ -166,6 +167,8 @@ struct JournalArgs {
     run: Option<RunId>,
     #[arg(long)]
     task: Option<TaskId>,
+    #[arg(long)]
+    agent: Option<Alias>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -304,15 +307,21 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
             };
             (Method::PATCH, format!("/v1/tasks/{id}"), Some(json(update)))
         }
-        Command::Journal(JournalArgs { chain, run, task }) => {
-            let filter = match (chain, run, task) {
-                (Some(id), _, _) => format!("chain={id}"),
-                (_, Some(id), _) => format!("run={id}"),
-                (_, _, Some(id)) => format!("task={id}"),
-                // clap requires exactly one of them.
-                _ => unreachable!(),
+        Command::Journal(JournalArgs {
+            chain,
+            run,
+            task,
+            agent,
+        }) => {
+            // clap allows at most one of them.
+            let filter = match (chain, run, task, agent) {
+                (Some(id), ..) => format!("?chain={id}"),
+                (_, Some(id), ..) => format!("?run={id}"),
+                (_, _, Some(id), _) => format!("?task={id}"),
+                (.., Some(alias)) => format!("?agent={}", alias.as_str()),
+                _ => String::new(),
             };
-            (Method::GET, format!("/v1/journal?{filter}"), None)
+            (Method::GET, format!("/v1/journal{filter}"), None)
         }
         Command::Status { .. } => (Method::GET, "/v1/status".into(), None),
         Command::Retry { agent, session } => (
@@ -531,11 +540,15 @@ mod tests {
     }
 
     #[test]
-    fn journal_takes_exactly_one_filter() {
+    fn journal_takes_at_most_one_filter() {
         let run = RunId::new().to_string();
         let (_, path, _) = request_of(&["journal", "--run", &run]);
         assert_eq!(path, format!("/v1/journal?run={run}"));
-        assert!(parse(&["journal"]).is_err());
+        assert_eq!(request_of(&["journal"]).1, "/v1/journal");
+        assert_eq!(
+            request_of(&["journal", "--agent", "coder"]).1,
+            "/v1/journal?agent=coder"
+        );
         let chain = CorrelationId::new().to_string();
         assert!(parse(&["journal", "--run", &run, "--chain", &chain]).is_err());
     }

@@ -1,6 +1,6 @@
 use control_plane_agent_journal::{Clock, FileJournal};
 use control_plane_common::journal::{
-    Component, Decision, Event, JournalFilter, JournalReader, JournalWriter,
+    Component, Decision, Event, JOURNAL_LIMIT, JournalFilter, JournalReader, JournalWriter,
 };
 use control_plane_common::{Caller, CorrelationId, Error, RunId, TaskId, Timestamp};
 use std::path::PathBuf;
@@ -223,4 +223,49 @@ async fn each_entry_is_one_json_line() {
         let json: serde_json::Value = serde_json::from_str(line).unwrap();
         assert_eq!(json["timestamp"], "2026-11-01T12:00:00Z");
     }
+}
+
+#[tokio::test]
+async fn reads_by_agent_or_the_latest_up_to_the_limit() {
+    let (_clock, clock) = TestClock::new();
+    let journal = FileJournal::open(dir(), 7, clock).await.unwrap();
+    let manager = Caller::Agent {
+        alias: "manager".parse().unwrap(),
+        run_id: RunId::new(),
+        correlation_id: CorrelationId::new(),
+    };
+    journal
+        .record(Event::new(&manager, Component::Runtime, "run_started"))
+        .await
+        .unwrap();
+    for i in 0..JOURNAL_LIMIT {
+        journal
+            .record(Event::new(
+                &agent(CorrelationId::new()),
+                Component::Gateway,
+                format!("tool-{i}"),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let by_agent = journal
+        .read(
+            &operator(),
+            JournalFilter::Agent("manager".parse().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_agent.len(), 1);
+    // The newest come back, oldest first: the first entry fell off.
+    let latest = journal
+        .read(&operator(), JournalFilter::Latest)
+        .await
+        .unwrap();
+    assert_eq!(latest.len(), JOURNAL_LIMIT);
+    assert_eq!(latest[0].event.action, "tool-0");
+    assert_eq!(
+        latest.last().unwrap().event.action,
+        format!("tool-{}", JOURNAL_LIMIT - 1)
+    );
 }

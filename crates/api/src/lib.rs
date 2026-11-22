@@ -447,12 +447,13 @@ async fn run_transcript(
     Ok(Json(s.runs.transcript(&caller, parse(&id)?).await?))
 }
 
-/// Exactly one of `chain`, `run` and `task`.
+/// At most one of `chain`, `run`, `task` and `agent`; none reads the latest.
 #[derive(Deserialize)]
 struct JournalQuery {
     chain: Option<String>,
     run: Option<String>,
     task: Option<String>,
+    agent: Option<String>,
 }
 
 async fn read_journal(
@@ -460,14 +461,17 @@ async fn read_journal(
     Authenticated(caller): Authenticated,
     Query(query): Query<JournalQuery>,
 ) -> Reply<Vec<JournalEntry>> {
-    let filter = match (query.chain, query.run, query.task) {
-        (Some(id), None, None) => JournalFilter::Chain(parse::<CorrelationId>(&id)?),
-        (None, Some(id), None) => JournalFilter::Run(parse::<RunId>(&id)?),
-        (None, None, Some(id)) => JournalFilter::Task(parse::<TaskId>(&id)?),
+    let filter = match (query.chain, query.run, query.task, query.agent) {
+        (Some(id), None, None, None) => JournalFilter::Chain(parse::<CorrelationId>(&id)?),
+        (None, Some(id), None, None) => JournalFilter::Run(parse::<RunId>(&id)?),
+        (None, None, Some(id), None) => JournalFilter::Task(parse::<TaskId>(&id)?),
+        (None, None, None, Some(alias)) => JournalFilter::Agent(parse::<Alias>(&alias)?),
+        (None, None, None, None) => JournalFilter::Latest,
         _ => {
-            return Err(
-                Error::InvalidInput("give exactly one of chain, run and task".to_owned()).into(),
-            );
+            return Err(Error::InvalidInput(
+                "give at most one of chain, run, task and agent".to_owned(),
+            )
+            .into());
         }
     };
     Ok(Json(s.journal.read(&caller, filter).await?))

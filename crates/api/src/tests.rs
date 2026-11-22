@@ -559,7 +559,7 @@ async fn gateway_verdicts_pass_through() {
 }
 
 #[tokio::test]
-async fn journal_takes_exactly_one_filter() {
+async fn journal_takes_at_most_one_filter() {
     let s = setup();
     let chain = CorrelationId::new();
     let (status, _) = call(
@@ -573,14 +573,22 @@ async fn journal_takes_exactly_one_filter() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(s.journal.0.lock().unwrap()[0], JournalFilter::Chain(chain));
 
-    let run = RunId::new();
-    for uri in [
-        "/v1/journal".to_owned(),
-        format!("/v1/journal?chain={chain}&run={run}"),
+    for (uri, filter) in [
+        (
+            "/v1/journal?agent=coder",
+            JournalFilter::Agent(alias("coder")),
+        ),
+        ("/v1/journal", JournalFilter::Latest),
     ] {
-        let (status, _) = call(&s.app, Method::GET, &uri, Some(OPERATOR), None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        let (status, _) = call(&s.app, Method::GET, uri, Some(OPERATOR), None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(s.journal.0.lock().unwrap().last(), Some(&filter));
     }
+
+    let run = RunId::new();
+    let uri = format!("/v1/journal?chain={chain}&run={run}");
+    let (status, _) = call(&s.app, Method::GET, &uri, Some(OPERATOR), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
 }
 
 #[tokio::test]

@@ -86,14 +86,21 @@ pub struct JournalEntry {
     pub event: Event,
 }
 
-/// Which entries to read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Which entries to read. At most the newest [`JOURNAL_LIMIT`] come back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "by", content = "id", rename_all = "snake_case")]
 pub enum JournalFilter {
     Chain(CorrelationId),
     Run(RunId),
     Task(TaskId),
+    /// What one agent did (D102).
+    Agent(Alias),
+    /// Everything, newest last: the Journal screen before any filter.
+    Latest,
 }
+
+/// The newest entries a read returns, oldest first.
+pub const JOURNAL_LIMIT: usize = 500;
 
 impl JournalFilter {
     pub fn matches(&self, event: &Event) -> bool {
@@ -101,6 +108,8 @@ impl JournalFilter {
             Self::Chain(id) => event.correlation_id == Some(*id),
             Self::Run(id) => event.run_id == Some(*id),
             Self::Task(id) => event.task_id == Some(*id),
+            Self::Agent(alias) => &event.actor == alias,
+            Self::Latest => true,
         }
     }
 }

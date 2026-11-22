@@ -10,7 +10,7 @@ mod files;
 
 use async_trait::async_trait;
 use control_plane_common::journal::{
-    Event, JournalEntry, JournalFilter, JournalReader, JournalWriter,
+    Event, JOURNAL_LIMIT, JournalEntry, JournalFilter, JournalReader, JournalWriter,
 };
 use control_plane_common::{Caller, Error, Result, Timestamp};
 use jiff::civil::Date;
@@ -107,7 +107,9 @@ impl JournalReader for FileJournal {
                     }
                 }
             }
-            Ok(entries)
+            // Days and lines are in order, so the newest are at the end.
+            let skip = entries.len().saturating_sub(JOURNAL_LIMIT);
+            Ok(entries.split_off(skip))
         })
         .await
     }
