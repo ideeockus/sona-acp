@@ -6,7 +6,7 @@ use control_plane_agent_runtime::{Limits, Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{
-    Access, Agent, AgentCard, AgentDirectory, AgentState, Credentials, ModelRef, Secret,
+    Access, Agent, AgentCard, AgentDirectory, AgentState, Credentials, ModelRef, Secret, Session,
 };
 use control_plane_common::runtime::{RunControl, RunFilter, RunOutcome, Usage};
 use control_plane_common::{
@@ -93,6 +93,15 @@ impl Credentials for Tokens {
         unimplemented!()
     }
     async fn contains_active_run_token(&self, _: &str) -> Result<bool> {
+        unimplemented!()
+    }
+    async fn open_session(&self, _: &str) -> Result<Session> {
+        unimplemented!()
+    }
+    async fn session_caller(&self, _: &str) -> Result<Caller> {
+        unimplemented!()
+    }
+    async fn close_session(&self, _: &str) -> Result<()> {
         unimplemented!()
     }
 }

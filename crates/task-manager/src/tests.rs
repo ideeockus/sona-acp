@@ -1,5 +1,5 @@
 use super::*;
-use control_plane_common::registry::{Agent, AgentCard, ModelRef, Secret};
+use control_plane_common::registry::{Agent, AgentCard, ModelRef, Secret, Session};
 use control_plane_common::tasks::TaskResult;
 use control_plane_common::{CorrelationId, RunId};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -61,6 +61,15 @@ impl Credentials for OneActiveToken {
     }
     async fn contains_active_run_token(&self, content: &str) -> Result<bool> {
         Ok(content.contains(LEAKED))
+    }
+    async fn open_session(&self, _: &str) -> Result<Session> {
+        unimplemented!()
+    }
+    async fn session_caller(&self, _: &str) -> Result<Caller> {
+        unimplemented!()
+    }
+    async fn close_session(&self, _: &str) -> Result<()> {
+        unimplemented!()
     }
 }
 
