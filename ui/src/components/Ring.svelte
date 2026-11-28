@@ -17,7 +17,13 @@
     stroke-dasharray={state === "stuck" ? "4 3" : state === "disabled" ? "1 3" : undefined}
   />
   {#if state === "running" || state === "stuck"}
-    <circle cx={size / 2 + r * 0.7071} cy={size / 2 - r * 0.7071} r="3.5" fill={state === "running" ? "var(--accent)" : "var(--danger-line)"} />
+    <circle
+      class:pulse={state === "running"}
+      cx={size / 2 + r * 0.7071}
+      cy={size / 2 - r * 0.7071}
+      r="3.5"
+      fill={state === "running" ? "var(--accent)" : "var(--danger-line)"}
+    />
   {/if}
 </svg>
 

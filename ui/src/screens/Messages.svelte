@@ -200,7 +200,7 @@
           <li class="center muted">No messages with @{alias} yet.</li>
         {/each}
         {#if me?.run}
-          <li class="mono small live working">● working · {since(me.run.started_at, now)}</li>
+          <li class="mono small live working"><span class="pulse">●</span> working · {since(me.run.started_at, now)}</li>
         {/if}
         {#each me?.failing ?? [] as f (f.session)}
           <!-- A failing session holds its messages back: say so where they were written. -->

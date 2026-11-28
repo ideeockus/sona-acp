@@ -237,14 +237,36 @@ textarea {
   border: 1px solid var(--line-strong);
   background: var(--bg);
 }
+/* A field in use shows it by its border; a ring is only for keyboard focus. */
 input:not([type="radio"], [type="checkbox"]):focus,
 select:focus,
-textarea:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 input:is([type="radio"], [type="checkbox"]):focus-visible,
 button:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Something live: a Run in progress. */
+.pulse {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
 }
 /* Choices keep their native shape; the ring hugs the control, a circle for a radio. */
 input:is([type="radio"], [type="checkbox"]) {
