@@ -46,7 +46,7 @@ npm --prefix ui ci
 npm --prefix ui run dev
 ```
 
-Первый агент — в UI (Agents → New agent) или через `sapctl`:
+Первый агент — в UI (Agents → New agent, провайдер и модель выбираются из списка) или через `sapctl`:
 
 ```text
 export SAPCTL_TOKEN=…
@@ -65,6 +65,8 @@ target/release/sapctl status
   "prompt": "You are @coder."
 }
 ```
+
+Модель — из `sapctl models`: там те, для которых у Pi есть ключ. Карточку с другой моделью control plane не сохранит.
 
 `access` — группы инструментов: `read_files`, `write_files`, `shell`, `tasks`, `send_messages`. `shell` даёт `bash` без проверок Gateway: внутри контейнера агент делает что угодно (G4).
 

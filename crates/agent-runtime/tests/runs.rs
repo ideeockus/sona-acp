@@ -330,7 +330,11 @@ impl Process for FakeProcess {
 #[async_trait]
 impl Launcher for FakePi {
     async fn start(&self, spec: RunSpec) -> Result<Launched> {
+        let listing = spec.args.iter().any(|a| a == "--no-session");
         self.specs.lock().unwrap().push(spec);
+        if listing {
+            return Ok(list_models());
+        }
         let script = self
             .scripts
             .lock()
@@ -404,6 +408,29 @@ impl Launcher for FakePi {
             stdout: Box::new(stdout),
             process: Box::new(FakeProcess(Some(exited))),
         })
+    }
+}
+
+/// A Pi asked only for its models (D104).
+fn list_models() -> Launched {
+    let (stdin, pi_stdin) = tokio::io::duplex(4096);
+    let (mut pi_stdout, stdout) = tokio::io::duplex(4096);
+    let (exit, exited) = oneshot::channel();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(pi_stdin).lines();
+        if let Ok(Some(line)) = lines.next_line().await {
+            assert_eq!(line, r#"{"type":"get_available_models"}"#);
+            let answer = br#"{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"id":"fake-1","name":"Fake","provider":"fake","contextWindow":1000,"cost":{"input":1,"output":2}}]}}"#;
+            pi_stdout.write_all(answer).await.unwrap();
+            pi_stdout.write_all(b"\n").await.unwrap();
+        }
+        while let Ok(Some(_)) = lines.next_line().await {}
+        let _ = exit.send(0);
+    });
+    Launched {
+        stdin: Box::new(stdin),
+        stdout: Box::new(stdout),
+        process: Box::new(FakeProcess(Some(exited))),
     }
 }
 
@@ -1139,4 +1166,42 @@ async fn disabling_an_agent_aborts_its_run_and_its_mail_waits() {
     s.inbox.disabled.lock().unwrap().clear();
     let _ = s.inbox.notifications.send(alias_of("coder"));
     eventually("message read", || s.inbox.is_read(&first)).await;
+}
+
+#[tokio::test]
+async fn models_come_from_pi_once_and_for_the_operator_only() {
+    let s = setup(vec![]).await;
+    let models = s.runtime.models(&operator()).await.unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(
+        (models[0].provider.as_str(), models[0].id.as_str()),
+        ("fake", "fake-1")
+    );
+    assert_eq!(models[0].price.output, 2.0);
+
+    // Pi gets the provider keys, but nothing of a Run: no token, no agent's files.
+    let spec = s.pi.specs.lock().unwrap()[0].clone();
+    assert_eq!(env_of(&spec, "FAKE_KEY"), "k");
+    assert!(
+        spec.env
+            .iter()
+            .all(|(name, _)| name != "SONA_PLANE_RUN_TOKEN")
+    );
+    assert_eq!(spec.mounts.len(), 1);
+    // Its scratch directory is gone with the answer.
+    assert!(!spec.mounts[0].host.exists());
+
+    // Kept: the second request starts no Pi.
+    assert_eq!(s.runtime.models(&operator()).await.unwrap(), models);
+    assert_eq!(s.pi.specs.lock().unwrap().len(), 1);
+
+    let agent = Caller::Agent {
+        alias: alias_of("coder"),
+        run_id: RunId::new(),
+        correlation_id: CorrelationId::new(),
+    };
+    assert!(matches!(
+        s.runtime.models(&agent).await,
+        Err(Error::Forbidden(_))
+    ));
 }

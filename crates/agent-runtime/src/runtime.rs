@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use control_plane_common::broker::{InboxDelivery, Notifications};
 use control_plane_common::journal::{Component, Event, JournalWriter, Outcome};
 use control_plane_common::registry::{AgentDirectory, Credentials};
-use control_plane_common::runtime::{ActiveRun, RunControl, RunFilter, RunRecord, TranscriptEntry};
+use control_plane_common::runtime::{
+    ActiveRun, ModelInfo, RunControl, RunFilter, RunRecord, TranscriptEntry,
+};
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, Result, RunId, SessionKey, Timestamp,
 };
@@ -78,6 +80,8 @@ pub(crate) struct Inner {
     serving: Mutex<HashMap<Alias, Arc<Notify>>>,
     /// Runs in progress by agent, each with the signal to abort it (D27).
     active: Mutex<HashMap<Alias, (ActiveRun, Arc<Stop>)>>,
+    /// Pi's models, once read (D104). Held across the read, so one Pi answers for all.
+    models: tokio::sync::Mutex<Option<Vec<ModelInfo>>>,
 }
 
 impl Runtime {
@@ -112,6 +116,7 @@ impl Runtime {
                 launcher,
                 serving: Mutex::new(HashMap::new()),
                 active: Mutex::new(HashMap::new()),
+                models: tokio::sync::Mutex::new(None),
             }),
         })
     }
@@ -282,6 +287,18 @@ impl RunControl for Runtime {
         let sessions = self.inner.agent_dir(&run.agent).join("sessions");
         let to = run.finished_at.unwrap_or_else(Timestamp::now);
         transcript::read(&sessions, run.session, run.started_at, to).await
+    }
+
+    async fn models(&self, caller: &Caller) -> Result<Vec<ModelInfo>> {
+        require_operator(caller)?;
+        let mut models = self.inner.models.lock().await;
+        if let Some(models) = &*models {
+            return Ok(models.clone());
+        }
+        // A failure is not kept: the next request asks Pi again.
+        let read = self.inner.read_models().await?;
+        *models = Some(read.clone());
+        Ok(read)
     }
 }
 

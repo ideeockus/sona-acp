@@ -53,6 +53,22 @@ async fn an_agent_answers_the_operator_past_gateway() {
     let model = Arc::new(Model::default());
     let (root, control_plane) = start("e2e-answer", model.clone()).await;
     let operator = &control_plane.operator;
+
+    // A short-lived Pi lists the models it has a key for, ours from models.json among them.
+    let models = operator.call("GET", "/v1/models", None).await;
+    let has = |provider: &str, id: &str| {
+        models
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["provider"] == provider && m["id"] == id)
+    };
+    assert!(has("fake", "fake-1"), "{models}");
+    let typo = json!({ "alias": "typo", "title": "", "model": { "provider": "fake", "id": "fake-2" },
+                       "access": [], "allow_message_to": [], "prompt": "" });
+    let refused = operator.try_call("POST", "/v1/agents", Some(typo)).await;
+    assert!(refused.unwrap_err().starts_with("400"));
+
     add_coder(operator).await;
     let sent = send(operator, "start", None).await;
     let chain = sent["correlation_id"].as_str().unwrap().to_owned();

@@ -2,9 +2,10 @@
 <script lang="ts">
   import { ACCESS } from "../lib/access";
   import { api, ApiError } from "../lib/api";
+  import { modelLabel } from "../lib/format";
   import { navigate } from "../lib/router.svelte";
   import { session } from "../lib/session.svelte";
-  import type { Access, Agent, AgentCard } from "../lib/types";
+  import type { Access, Agent, AgentCard, ModelInfo } from "../lib/types";
 
   let { alias = null }: { alias?: string | null } = $props();
   const editing = $derived(alias !== null);
@@ -37,6 +38,26 @@
       }
     });
   });
+
+  // The first request starts a Pi to list them, so it may take a few seconds (D104).
+  let models = $state<ModelInfo[] | null>(null);
+  let modelsError = $state<string | null>(null);
+  $effect(() => {
+    api
+      .get<ModelInfo[]>("/models")
+      .then((list) => (models = list))
+      .catch((e) => (modelsError = e instanceof ApiError ? (e.body.detail ?? e.body.kind) : "Could not read the models."));
+  });
+  const providers = $derived([...new Set((models ?? []).map((m) => m.provider))].sort());
+  const ofProvider = $derived((models ?? []).filter((m) => m.provider === card.model.provider));
+  /** A saved card whose model Pi no longer has: shown as is, so the form never hides it. */
+  const missing = $derived(
+    models !== null && card.model.id !== "" && !ofProvider.some((m) => m.id === card.model.id),
+  );
+
+  function pickProvider(provider: string) {
+    card.model = { provider, id: "" };
+  }
 
   const recipients = $derived([...others, ...(session.alias ? [session.alias] : [])]);
 
@@ -88,12 +109,29 @@
         </label>
         <label>
           Provider
-          <input bind:value={card.model.provider} required placeholder="anthropic" autocomplete="off" />
+          <select value={card.model.provider} onchange={(e) => pickProvider(e.currentTarget.value)} required disabled={models === null}>
+            {#if !providers.includes(card.model.provider)}
+              <option value={card.model.provider}>{card.model.provider || (models === null ? "Loading…" : "Choose")}</option>
+            {/if}
+            {#each providers as p (p)}<option value={p}>{p}</option>{/each}
+          </select>
+          {#if modelsError}
+            <span class="hint error">{modelsError}</span>
+          {:else if models?.length === 0}
+            <span class="hint">Pi has no models: pass a provider key through provider_env.</span>
+          {:else}
+            <span class="hint">Providers Pi has a key for.</span>
+          {/if}
         </label>
         <label>
           Model
-          <input bind:value={card.model.id} required placeholder="claude-sonnet-5-5" autocomplete="off" />
-          <span class="hint">As named in models.json.</span>
+          <select bind:value={card.model.id} required disabled={models === null}>
+            {#if card.model.id === "" || missing}
+              <option value={card.model.id} disabled={!missing}>{missing ? `${card.model.id} — not available` : "Choose"}</option>
+            {/if}
+            {#each ofProvider as m (m.id)}<option value={m.id}>{modelLabel(m)}</option>{/each}
+          </select>
+          <span class="hint">{missing ? "Pi has no key for it any more, or no such model." : "Context and price per million tokens, input / output."}</span>
         </label>
         <label class="wide">
           Color

@@ -4,7 +4,9 @@ use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
 use control_plane_common::broker::{InboxStatus, StoppedChain};
 use control_plane_common::registry::{Secret, Session};
-use control_plane_common::runtime::{ActiveRun, RunFilter, RunRecord, TranscriptEntry};
+use control_plane_common::runtime::{
+    ActiveRun, ModelInfo, Price, RunFilter, RunRecord, TranscriptEntry,
+};
 use control_plane_common::{Caller, MessageId, Result, Timestamp};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -325,6 +327,17 @@ impl RunControl for Runs {
     async fn run(&self, caller: &Caller, run_id: RunId) -> Result<RunRecord> {
         operator_only(caller)?;
         Err(Error::NotFound(format!("run {run_id}")))
+    }
+    /// Pi has one model, `p/m`.
+    async fn models(&self, caller: &Caller) -> Result<Vec<ModelInfo>> {
+        operator_only(caller)?;
+        Ok(vec![ModelInfo {
+            provider: "p".to_owned(),
+            id: "m".to_owned(),
+            name: "M".to_owned(),
+            context_window: 1000,
+            price: Price::default(),
+        }])
     }
 }
 
@@ -906,4 +919,44 @@ async fn a_session_reads_freely_but_changes_only_from_our_origin() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let cleared = response.headers()["set-cookie"].to_str().unwrap();
     assert!(cleared.starts_with("sona_session=;") && cleared.contains("Max-Age=0"));
+}
+
+#[tokio::test]
+async fn a_card_needs_a_model_pi_has() {
+    let s = setup();
+    let (status, body) = call(&s.app, Method::GET, "/v1/models", Some(OPERATOR), None).await;
+    assert_eq!(
+        (status, body[0]["provider"].as_str()),
+        (StatusCode::OK, Some("p"))
+    );
+    let (status, _) = call(&s.app, Method::GET, "/v1/models", Some(AGENT), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let card = json!({"alias": "coder", "title": "", "model": {"provider": "p", "id": "typo"},
+                      "access": [], "allow_message_to": [], "prompt": ""});
+    let (status, body) = call(
+        &s.app,
+        Method::POST,
+        "/v1/agents",
+        Some(OPERATOR),
+        Some(card.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["detail"].as_str().unwrap().contains("p/typo"),
+        "{body}"
+    );
+
+    let mut edit = card;
+    edit["version"] = json!(2);
+    let (status, _) = call(
+        &s.app,
+        Method::PUT,
+        "/v1/agents/coder",
+        Some(OPERATOR),
+        Some(edit),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

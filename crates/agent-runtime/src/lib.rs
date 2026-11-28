@@ -6,6 +6,7 @@
 
 mod context;
 pub mod launcher;
+mod models;
 pub mod rpc;
 mod run;
 mod runtime;

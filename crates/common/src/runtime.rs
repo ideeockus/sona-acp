@@ -14,6 +14,24 @@ pub struct ActiveRun {
     pub started_at: Timestamp,
 }
 
+/// A model Pi can run with the control plane's keys and providers (D104).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+    pub context_window: u64,
+    /// As Pi prices it; zero when Pi does not know the price.
+    pub price: Price,
+}
+
+/// US dollars per million tokens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+}
+
 /// Tokens and money a Run spent, summed over the model's answers (D97).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
@@ -124,4 +142,8 @@ pub trait RunControl: Send + Sync {
     /// What the model saw and did in the Run, oldest first (D102). Empty when Pi
     /// wrote nothing. Operator only.
     async fn transcript(&self, caller: &Caller, run_id: RunId) -> Result<Vec<TranscriptEntry>>;
+
+    /// The models Pi has a key for, from its catalog and `models.json` (D104). Read
+    /// from Pi once and kept: keys and providers change only with a restart. Operator only.
+    async fn models(&self, caller: &Caller) -> Result<Vec<ModelInfo>>;
 }

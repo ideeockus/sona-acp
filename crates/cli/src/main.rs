@@ -84,6 +84,8 @@ enum Command {
         #[arg(long)]
         chain: Option<CorrelationId>,
     },
+    /// The models Pi has a key for: what a card may name (D104).
+    Models,
 }
 
 #[derive(Subcommand)]
@@ -350,6 +352,7 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
             (Method::GET, path, None)
         }
         Command::Transcript { run } => (Method::GET, format!("/v1/runs/{run}/transcript"), None),
+        Command::Models => (Method::GET, "/v1/models".to_owned(), None),
         Command::Runs { agent, chain } => {
             let mut query = Vec::new();
             if let Some(agent) = agent {

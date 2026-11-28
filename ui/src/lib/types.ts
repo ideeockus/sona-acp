@@ -19,6 +19,15 @@ export interface SessionInfo {
 export type Access = "read_files" | "write_files" | "shell" | "tasks" | "send_messages";
 export type AgentState = "active" | "disabled";
 
+/** A model Pi has a key for (D104); prices are dollars per million tokens. */
+export interface ModelInfo {
+  provider: string;
+  id: string;
+  name: string;
+  context_window: number;
+  price: { input: number; output: number };
+}
+
 export interface AgentCard {
   alias: Alias;
   title: string;

@@ -37,6 +37,17 @@ export function firstLine(text: string): string {
   return line.length > 90 ? `${line.slice(0, 90)}…` : line;
 }
 
+/** A model for a picker: its context and price per million tokens, when Pi knows it. */
+export function modelLabel(m: { name: string; context_window: number; price: { input: number; output: number } }): string {
+  const parts = [m.name];
+  if (m.context_window > 0) {
+    const k = m.context_window / 1000;
+    parts.push(k >= 1000 ? `${k / 1000}M` : `${Math.round(k)}K`);
+  }
+  if (m.price.input > 0 || m.price.output > 0) parts.push(`$${m.price.input} / $${m.price.output}`);
+  return parts.join(" · ");
+}
+
 export function tokens(count: number): string {
   return count < 1000 ? `${count}` : `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}k`;
 }

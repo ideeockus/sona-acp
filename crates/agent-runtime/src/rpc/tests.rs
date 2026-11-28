@@ -17,6 +17,10 @@ fn commands_match_pi_format() {
         serde_json::to_string(&Command::Abort).unwrap(),
         r#"{"type":"abort"}"#
     );
+    assert_eq!(
+        serde_json::to_string(&Command::GetAvailableModels).unwrap(),
+        r#"{"type":"get_available_models"}"#
+    );
 }
 
 #[test]
@@ -47,7 +51,8 @@ fn parses_the_events_runtime_uses() {
         Event::Response {
             command: "prompt".to_owned(),
             success: false,
-            error: Some("busy".to_owned())
+            error: Some("busy".to_owned()),
+            data: None,
         }
     );
 }
@@ -70,7 +75,8 @@ async fn reader_splits_on_line_feeds_only() {
         Some(Event::Response {
             command: "a\u{2028}b".to_owned(),
             success: true,
-            error: None
+            error: None,
+            data: None,
         })
     );
     assert_eq!(reader.next().await.unwrap(), Some(Event::AgentSettled));
@@ -125,4 +131,28 @@ async fn last_line_without_line_feed_is_read() {
     let mut reader = EventReader::new(r#"{"type":"agent_settled"}"#.as_bytes());
     assert_eq!(reader.next().await.unwrap(), Some(Event::AgentSettled));
     assert_eq!(reader.next().await.unwrap(), None);
+}
+
+#[test]
+fn available_models_keep_what_the_picker_shows() {
+    let reply = parse(
+        r#"{"type":"response","command":"get_available_models","success":true,"data":{"models":[
+            {"id":"glm-5.3","name":"GLM 5.3","provider":"opencode-go","contextWindow":1000000,
+             "cost":{"input":0.6,"output":2.2,"cacheRead":0.1},"reasoning":true},
+            {"id":"fake-1","provider":"fake"}]}}"#,
+    );
+    let Event::Response {
+        data: Some(data), ..
+    } = reply
+    else {
+        panic!("{reply:?}");
+    };
+    let models = available_models(data).unwrap();
+    assert_eq!(models[0].provider, "opencode-go");
+    assert_eq!(models[0].name, "GLM 5.3");
+    assert_eq!(models[0].context_window, 1_000_000);
+    assert_eq!(models[0].price.output, 2.2);
+    // Pi's own providers carry no name or price for a custom model.
+    assert_eq!(models[1].name, "fake-1");
+    assert_eq!(models[1].price.input, 0.0);
 }

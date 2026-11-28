@@ -16,8 +16,10 @@ use control_plane_common::broker::{
 };
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
-use control_plane_common::registry::{Agent, AgentCard, AgentRegistry, AgentVersion, Credentials};
-use control_plane_common::runtime::{RunControl, RunFilter, RunRecord, TranscriptEntry};
+use control_plane_common::registry::{
+    Agent, AgentCard, AgentRegistry, AgentVersion, Credentials, ModelRef,
+};
+use control_plane_common::runtime::{ModelInfo, RunControl, RunFilter, RunRecord, TranscriptEntry};
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{
@@ -75,6 +77,7 @@ pub fn router(services: Services) -> Router {
         .route("/v1/runs/{id}", get(get_run))
         .route("/v1/runs/{id}/transcript", get(run_transcript))
         .route("/v1/journal", get(read_journal))
+        .route("/v1/models", get(list_models))
         .with_state(Arc::new(services))
 }
 
@@ -279,6 +282,7 @@ async fn create_agent(
     Authenticated(caller): Authenticated,
     Body(card): Body<AgentCard>,
 ) -> Result<StatusCode, ApiError> {
+    check_model(&s, &caller, &card.model).await?;
     s.registry.create_agent(&caller, card).await?;
     Ok(StatusCode::CREATED)
 }
@@ -307,7 +311,31 @@ async fn update_agent(
     if edit.card.alias != alias {
         return Err(Error::InvalidInput("an agent's alias never changes".to_owned()).into());
     }
+    check_model(&s, &caller, &edit.card.model).await?;
     Ok(Json(s.registry.update_agent(&caller, edit).await?))
+}
+
+/// A card runs only on a model Pi has a key for (D104): a typo or a missing key
+/// fails here, not at the agent's first Run.
+async fn check_model(s: &Services, caller: &Caller, model: &ModelRef) -> Result<(), Error> {
+    let models = s.runs.models(caller).await?;
+    if models
+        .iter()
+        .any(|m| m.provider == model.provider && m.id == model.id)
+    {
+        return Ok(());
+    }
+    Err(Error::InvalidInput(format!(
+        "Pi has no model {}/{}: check the name, and that provider_env passes its key",
+        model.provider, model.id
+    )))
+}
+
+async fn list_models(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+) -> Reply<Vec<ModelInfo>> {
+    Ok(Json(s.runs.models(&caller).await?))
 }
 
 /// Registry first, so no new Run starts; then the running one is aborted (D101).

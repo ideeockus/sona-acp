@@ -241,14 +241,10 @@ impl Inner {
         let work = agent_dir.join("work");
         let sessions = agent_dir.join("sessions");
         let pi_dir = run.dir.join("pi");
-        for dir in [&work, &sessions, &pi_dir] {
+        for dir in [&work, &sessions] {
             tokio::fs::create_dir_all(dir).await.map_err(io)?;
         }
-        if let Some(models) = &self.config.models_json {
-            tokio::fs::copy(models, pi_dir.join("models.json"))
-                .await
-                .map_err(io)?;
-        }
+        self.prepare_pi_dir(&pi_dir).await?;
 
         let context = run_context(
             &run.card.alias,
@@ -346,7 +342,7 @@ impl Inner {
                         let result = if is_error { Outcome::Error } else { Outcome::Ok };
                         self.record(run, &tool_name, Some(result), None).await?;
                     }
-                    Some(Event::Response { success: false, command, error }) => {
+                    Some(Event::Response { success: false, command, error, .. }) => {
                         let error = error.unwrap_or_default();
                         return Err(Error::Internal(format!("Pi refused {command}: {error}")));
                     }
@@ -418,6 +414,17 @@ impl Inner {
             ("SONA_PLANE_API_URL", &self.config.api_url),
             // What `read_messages` reads, so the model never has to copy it (D78).
             ("SONA_PLANE_SESSION", &session),
+        ]
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .to_vec();
+        env.extend(self.pi_home_env());
+        env
+    }
+
+    /// What every Pi gets, a Run or not: its own directory, no calls home, the
+    /// provider keys.
+    pub(crate) fn pi_home_env(&self) -> Vec<(String, String)> {
+        let mut env: Vec<(String, String)> = [
             ("PI_CODING_AGENT_DIR", PI_DIR),
             ("HOME", PI_DIR),
             ("PI_OFFLINE", "1"),
@@ -428,6 +435,17 @@ impl Inner {
         .to_vec();
         env.extend(self.config.provider_env.iter().cloned());
         env
+    }
+
+    /// Pi's directory, with our providers in it (D62).
+    pub(crate) async fn prepare_pi_dir(&self, pi_dir: &Path) -> Result<()> {
+        tokio::fs::create_dir_all(pi_dir).await.map_err(io)?;
+        if let Some(models) = &self.config.models_json {
+            tokio::fs::copy(models, pi_dir.join("models.json"))
+                .await
+                .map_err(io)?;
+        }
+        Ok(())
     }
 
     /// The agent's allowed recipients, with titles for those who are agents.

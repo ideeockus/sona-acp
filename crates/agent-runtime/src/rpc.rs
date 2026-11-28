@@ -3,7 +3,7 @@
 //! Only what Agent Runtime uses is modelled. Unknown records parse as [`Event::Other`],
 //! so a newer Pi with extra events does not break us.
 
-use control_plane_common::runtime::Usage;
+use control_plane_common::runtime::{ModelInfo, Price, Usage};
 use control_plane_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -17,6 +17,8 @@ pub enum Command {
     Steer { message: String },
     /// Stops the current run (D27).
     Abort,
+    /// The models Pi has a key for (D104).
+    GetAvailableModels,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -32,6 +34,9 @@ pub enum Event {
         success: bool,
         #[serde(default)]
         error: Option<String>,
+        /// What the command returns, if anything.
+        #[serde(default)]
+        data: Option<serde_json::Value>,
     },
     ToolExecutionStart {
         tool_call_id: String,
@@ -107,6 +112,53 @@ impl EndedMessage {
                 .unwrap_or_else(|| "no details".to_owned())
         })
     }
+}
+
+/// The answer to `get_available_models`: `{"models": [Model]}`.
+pub fn available_models(data: serde_json::Value) -> Result<Vec<ModelInfo>> {
+    #[derive(Deserialize)]
+    struct Available {
+        models: Vec<PiModel>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PiModel {
+        provider: String,
+        id: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        context_window: u64,
+        #[serde(default)]
+        cost: Option<PiPrice>,
+    }
+    #[derive(Deserialize)]
+    struct PiPrice {
+        #[serde(default)]
+        input: f64,
+        #[serde(default)]
+        output: f64,
+    }
+    let available: Available = serde_json::from_value(data)
+        .map_err(|e| Error::Internal(format!("invalid model list from Pi: {e}")))?;
+    Ok(available
+        .models
+        .into_iter()
+        .map(|m| ModelInfo {
+            name: if m.name.is_empty() {
+                m.id.clone()
+            } else {
+                m.name
+            },
+            provider: m.provider,
+            id: m.id,
+            context_window: m.context_window,
+            price: m.cost.map_or_else(Price::default, |c| Price {
+                input: c.input,
+                output: c.output,
+            }),
+        })
+        .collect())
 }
 
 /// Writes commands to Pi's stdin.
