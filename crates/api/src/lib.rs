@@ -12,7 +12,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use control_plane_common::broker::{
-    Conversation, DeliveryControl, Message, MessageBroker, NewMessage,
+    Conversation, DeliveryControl, Message, MessageBroker, NewMessage, Thread,
 };
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
@@ -55,6 +55,7 @@ pub fn router(services: Services) -> Router {
         .route("/v1/messages", post(send_message))
         .route("/v1/sessions/{session}/messages", get(read_messages))
         .route("/v1/conversations", get(conversations))
+        .route("/v1/conversations/{agent}/threads", get(threads))
         .route("/v1/conversations/{agent}/messages", get(conversation))
         .route("/v1/conversations/{agent}/read", post(mark_read))
         .route("/v1/tasks", post(create_task).get(list_tasks))
@@ -189,8 +190,18 @@ async fn conversations(
     Ok(Json(s.broker.conversations(&caller).await?))
 }
 
+async fn threads(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(agent): Path<String>,
+) -> Reply<Vec<Thread>> {
+    let agent: Alias = parse(&agent)?;
+    Ok(Json(s.broker.threads(&caller, &agent).await?))
+}
+
 #[derive(Deserialize)]
 struct PageQuery {
+    session: Option<String>,
     before: Option<String>,
 }
 
@@ -201,8 +212,13 @@ async fn conversation(
     Query(query): Query<PageQuery>,
 ) -> Reply<Vec<Message>> {
     let agent: Alias = parse(&agent)?;
+    let session = query.session.as_deref().map(parse).transpose()?;
     let before = query.before.as_deref().map(parse).transpose()?;
-    Ok(Json(s.broker.conversation(&caller, &agent, before).await?))
+    Ok(Json(
+        s.broker
+            .conversation(&caller, &agent, session, before)
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]

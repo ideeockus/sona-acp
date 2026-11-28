@@ -48,10 +48,13 @@ enum Command {
     },
     /// Unread messages of one session: `task-<id>` or `chain-<id>` (D78).
     Read { session: SessionKey },
-    /// Your conversations, latest first; with an agent, the thread with it (D102).
-    /// Showing a thread does not mark it read.
+    /// Your conversations, latest first; with an agent, your messages with it (D102),
+    /// of one thread with `--session`. Showing them does not mark them read.
     Conversations {
         agent: Option<Alias>,
+        /// One thread: `task-<id>` or `chain-<id>` (D105).
+        #[arg(long, requires = "agent")]
+        session: Option<SessionKey>,
         /// The page just before this message.
         #[arg(long, requires = "agent")]
         before: Option<MessageId>,
@@ -75,6 +78,8 @@ enum Command {
     Stop { chain: CorrelationId },
     /// Delivers a stopped chain again, with what arrived meanwhile (D27).
     Resume { chain: CorrelationId },
+    /// Your threads with an agent, latest first: a session each (D105).
+    Threads { agent: Alias },
     /// What the model saw and did in a Run (D102).
     Transcript { run: RunId },
     /// The newest Runs with what they spent (D97).
@@ -343,14 +348,27 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         }
         Command::Conversations {
             agent: Some(agent),
+            session,
             before,
         } => {
-            let mut path = format!("/v1/conversations/{}/messages", agent.as_str());
+            let mut query = Vec::new();
+            if let Some(session) = session {
+                query.push(format!("session={session}"));
+            }
             if let Some(before) = before {
-                path.push_str(&format!("?before={before}"));
+                query.push(format!("before={before}"));
+            }
+            let mut path = format!("/v1/conversations/{}/messages", agent.as_str());
+            if !query.is_empty() {
+                path.push_str(&format!("?{}", query.join("&")));
             }
             (Method::GET, path, None)
         }
+        Command::Threads { agent } => (
+            Method::GET,
+            format!("/v1/conversations/{}/threads", agent.as_str()),
+            None,
+        ),
         Command::Transcript { run } => (Method::GET, format!("/v1/runs/{run}/transcript"), None),
         Command::Models => (Method::GET, "/v1/models".to_owned(), None),
         Command::Runs { agent, chain } => {

@@ -47,6 +47,17 @@ pub struct Conversation {
     pub unread: u32,
 }
 
+/// One conversation of the operator with an agent: a session of theirs (D78, D105).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thread {
+    pub session: SessionKey,
+    /// What started it, for a title.
+    pub first: Message,
+    pub last: Message,
+    /// Messages from the agent the operator has not opened yet.
+    pub unread: u32,
+}
+
 /// Unread messages of one session, handed to one Run (D57).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxBatch {
@@ -99,19 +110,24 @@ pub trait MessageBroker: Send + Sync {
     /// The cursor does not move: only a finished Run moves it (D49).
     async fn read_messages(&self, caller: &Caller, session: SessionKey) -> Result<Vec<Message>>;
 
-    /// The operator's conversations, the latest first (D102). Operator only.
+    /// The agents the operator talks to, the latest first (D102). Operator only.
     async fn conversations(&self, caller: &Caller) -> Result<Vec<Conversation>>;
 
-    /// A page of the operator's conversation with `agent`, oldest first: the newest
-    /// messages, or those just before `before`. Operator only.
+    /// The operator's threads with `agent`, the latest first, at most a hundred
+    /// (D105). Operator only.
+    async fn threads(&self, caller: &Caller, agent: &Alias) -> Result<Vec<Thread>>;
+
+    /// A page of the operator's messages with `agent`, oldest first: the newest, or
+    /// those just before `before`; of one thread, or of all. Operator only.
     async fn conversation(
         &self,
         caller: &Caller,
         agent: &Alias,
+        session: Option<SessionKey>,
         before: Option<MessageId>,
     ) -> Result<Vec<Message>>;
 
-    /// Marks the conversation read up to and including `up_to`, as when the operator
+    /// Marks the thread of `up_to` read up to and including it, as when the operator
     /// opens it. Never moves back. Operator only.
     async fn mark_read(&self, caller: &Caller, agent: &Alias, up_to: MessageId) -> Result<()>;
 }

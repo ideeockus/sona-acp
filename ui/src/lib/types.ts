@@ -133,6 +133,14 @@ export interface Conversation {
   unread: number;
 }
 
+/** One session of an agent's, as a thread of the operator's (D105). */
+export interface Thread {
+  session: SessionKey;
+  first: Message;
+  last: Message;
+  unread: number;
+}
+
 export type TaskStatus = "open" | "in_progress" | "needs_human" | "done" | "cancelled";
 
 export interface Task {

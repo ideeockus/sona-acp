@@ -2,7 +2,7 @@ use super::*;
 use async_trait::async_trait;
 use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
-use control_plane_common::broker::{InboxStatus, StoppedChain};
+use control_plane_common::broker::{InboxStatus, StoppedChain, Thread};
 use control_plane_common::registry::{Secret, Session};
 use control_plane_common::runtime::{
     ActiveRun, ModelInfo, Price, RunFilter, RunRecord, TranscriptEntry,
@@ -163,15 +163,24 @@ impl MessageBroker for Broker {
         operator_only(caller)?;
         Ok(Vec::new())
     }
+    async fn threads(&self, caller: &Caller, agent: &Alias) -> Result<Vec<Thread>> {
+        operator_only(caller)?;
+        assert_eq!(agent.as_str(), "coder");
+        Ok(Vec::new())
+    }
     async fn conversation(
         &self,
         caller: &Caller,
         agent: &Alias,
+        session: Option<SessionKey>,
         before: Option<MessageId>,
     ) -> Result<Vec<Message>> {
         operator_only(caller)?;
         self.callers.lock().unwrap().push(caller.clone());
-        assert_eq!((agent.as_str(), before.is_some()), ("coder", true));
+        assert_eq!(
+            (agent.as_str(), session.is_some(), before.is_some()),
+            ("coder", true, true)
+        );
         Ok(Vec::new())
     }
     async fn mark_read(&self, caller: &Caller, agent: &Alias, _: MessageId) -> Result<()> {
@@ -811,7 +820,10 @@ async fn conversations_page_and_mark_read() {
     let (status, _) = call(
         &s.app,
         Method::GET,
-        &format!("/v1/conversations/coder/messages?before={before}"),
+        &format!(
+            "/v1/conversations/coder/messages?session=chain-{}&before={before}",
+            CorrelationId::new()
+        ),
         Some(OPERATOR),
         None,
     )
@@ -826,6 +838,15 @@ async fn conversations_page_and_mark_read() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = call(
+        &s.app,
+        Method::GET,
+        "/v1/conversations/coder/threads",
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
     let (status, _) = call(&s.app, Method::GET, "/v1/conversations", Some(AGENT), None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }

@@ -116,14 +116,21 @@ fn card(name: &str, allow_message_to: &[&str]) -> AgentCard {
 
 /// `@manager` and `@coder` may message each other; `@coder` may also message the operator.
 async fn setup() -> Setup {
+    setup_on(memory_pool().await).await
+}
+
+async fn memory_pool() -> SqlitePool {
     // One connection that never closes: every connection gets its own in-memory database.
-    let pool = SqlitePoolOptions::new()
+    SqlitePoolOptions::new()
         .max_connections(1)
         .idle_timeout(None)
         .max_lifetime(None)
         .connect_with(SqliteConnectOptions::new().in_memory(true))
         .await
-        .unwrap();
+        .unwrap()
+}
+
+async fn setup_on(pool: SqlitePool) -> Setup {
     let directory = Arc::new(Directory(
         vec![
             card("manager", &["coder"]),
@@ -888,29 +895,74 @@ async fn the_operator_sees_one_thread_per_agent_and_what_is_unread() {
     assert_eq!(summary, [("manager", 0), ("coder", 2)]);
     assert_eq!(conversations[1].last.id, question.id);
 
-    // Every session of the agent in one thread, oldest first.
-    let thread = s
+    // Every session of the agent, oldest first, or one of them.
+    let all = s
         .broker
-        .conversation(&operator(), &alias("coder"), None)
+        .conversation(&operator(), &alias("coder"), None, None)
         .await
         .unwrap();
-    let ids: Vec<MessageId> = thread.iter().map(|m| m.id).collect();
+    let ids: Vec<MessageId> = all.iter().map(|m| m.id).collect();
     assert_eq!(ids, [asked.id, reply.id, question.id]);
-    assert_eq!(thread[2].task_id, Some(task));
     let older = s
         .broker
-        .conversation(&operator(), &alias("coder"), Some(question.id))
+        .conversation(&operator(), &alias("coder"), None, Some(question.id))
         .await
         .unwrap();
     assert_eq!(older.len(), 2);
+    let chain_thread = s
+        .broker
+        .conversation(
+            &operator(),
+            &alias("coder"),
+            Some(SessionKey::Chain(chain)),
+            None,
+        )
+        .await
+        .unwrap();
+    let ids: Vec<MessageId> = chain_thread.iter().map(|m| m.id).collect();
+    assert_eq!(ids, [asked.id, reply.id]);
 
+    // A thread per session, the latest first.
+    let threads = s
+        .broker
+        .threads(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    let summary: Vec<(SessionKey, MessageId, MessageId, u32)> = threads
+        .iter()
+        .map(|t| (t.session, t.first.id, t.last.id, t.unread))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (SessionKey::Task(task), question.id, question.id, 1),
+            (SessionKey::Chain(chain), asked.id, reply.id, 1),
+        ]
+    );
+
+    // Opening one thread leaves the other unread.
     s.broker
         .mark_read(&operator(), &alias("coder"), question.id)
         .await
         .unwrap();
-    // Marking an older message read never moves the cursor back.
+    let threads = s
+        .broker
+        .threads(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    assert_eq!((threads[0].unread, threads[1].unread), (0, 1));
+    assert_eq!(
+        s.broker.conversations(&operator()).await.unwrap()[1].unread,
+        1
+    );
+
+    // Marking an older message read never moves a cursor back.
     s.broker
         .mark_read(&operator(), &alias("coder"), reply.id)
+        .await
+        .unwrap();
+    s.broker
+        .mark_read(&operator(), &alias("coder"), asked.id)
         .await
         .unwrap();
     let conversations = s.broker.conversations(&operator()).await.unwrap();
@@ -938,7 +990,47 @@ async fn conversations_are_the_operators_and_messages_must_belong_to_them() {
         Err(Error::Forbidden(_))
     ));
     assert!(matches!(
-        s.broker.conversation(&coder, &alias("manager"), None).await,
+        s.broker.threads(&coder, &alias("manager")).await,
         Err(Error::Forbidden(_))
     ));
+    assert!(matches!(
+        s.broker
+            .conversation(&coder, &alias("manager"), None, None)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+}
+
+#[tokio::test]
+async fn what_was_read_before_threads_stays_read_in_each() {
+    let pool = memory_pool().await;
+    let mut before = sqlx::migrate!();
+    before.migrations = before.migrations[..5].to_vec().into();
+    before.run(&pool).await.unwrap();
+    // Two sessions with @coder, read up to the newest message.
+    sqlx::query(
+        "INSERT INTO messages (seq, id, sender, recipient, body, correlation_id, session, created_at)
+         VALUES (1, ?1, 'coder', 'user', 'a', ?3, ?4, 0), (2, ?2, 'coder', 'user', 'b', ?3, ?5, 0)",
+    )
+    .bind(MessageId::new().to_string())
+    .bind(MessageId::new().to_string())
+    .bind(CorrelationId::new().to_string())
+    .bind(SessionKey::Chain(CorrelationId::new()).to_string())
+    .bind(SessionKey::Task(TaskId::new()).to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO operator_reads (reader, agent, up_to) VALUES ('user', 'coder', 2)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let s = setup_on(pool).await;
+    let threads = s
+        .broker
+        .threads(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    let unread: Vec<u32> = threads.iter().map(|t| t.unread).collect();
+    assert_eq!(unread, [0, 0]);
 }
