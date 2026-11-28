@@ -62,9 +62,9 @@
         <Messages />
       {:else if match("/messages/:alias")}
         {#key route.path}<Messages alias={match("/messages/:alias")!.alias} />{/key}
-      {:else if match("/messages/:alias/:session")}
-        {@const m = match("/messages/:alias/:session")!}
-        {#key route.path}<Messages alias={m.alias} session={m.session} />{/key}
+      {:else if match("/messages/:alias/:chain")}
+        {@const m = match("/messages/:alias/:chain")!}
+        {#key route.path}<Messages alias={m.alias} chain={m.chain} />{/key}
       {:else if match("/skills")}
         <Skills />
       {:else if match("/skills/:name")}

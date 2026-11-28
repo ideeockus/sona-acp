@@ -179,13 +179,13 @@ impl MessageBroker for Broker {
         &self,
         caller: &Caller,
         agent: &Alias,
-        session: Option<SessionKey>,
+        chain: Option<CorrelationId>,
         before: Option<MessageId>,
     ) -> Result<Vec<Message>> {
         operator_only(caller)?;
         self.callers.lock().unwrap().push(caller.clone());
         assert_eq!(
-            (agent.as_str(), session.is_some(), before.is_some()),
+            (agent.as_str(), chain.is_some(), before.is_some()),
             ("coder", true, true)
         );
         Ok(Vec::new())
@@ -1022,7 +1022,7 @@ async fn conversations_page_and_mark_read() {
         &s.app,
         Method::GET,
         &format!(
-            "/v1/conversations/coder/messages?session=chain-{}&before={before}",
+            "/v1/conversations/coder/messages?chain={}&before={before}",
             CorrelationId::new()
         ),
         Some(OPERATOR),

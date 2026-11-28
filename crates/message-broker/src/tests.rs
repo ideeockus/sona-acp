@@ -1015,36 +1015,50 @@ async fn the_operator_sees_one_thread_per_agent_and_what_is_unread() {
         .await
         .unwrap();
     assert_eq!(older.len(), 2);
+    // One thread per chain: the reply from the task the agent took up is in it.
     let chain_thread = s
         .broker
-        .conversation(
-            &operator(),
-            &alias("coder"),
-            Some(SessionKey::Chain(chain)),
-            None,
-        )
+        .conversation(&operator(), &alias("coder"), Some(chain), None)
         .await
         .unwrap();
     let ids: Vec<MessageId> = chain_thread.iter().map(|m| m.id).collect();
-    assert_eq!(ids, [asked.id, reply.id]);
+    assert_eq!(ids, [asked.id, reply.id, question.id]);
 
-    // A thread per session, the latest first.
     let threads = s
         .broker
         .threads(&operator(), &alias("coder"))
         .await
         .unwrap();
-    let summary: Vec<(SessionKey, MessageId, MessageId, u32)> = threads
-        .iter()
-        .map(|t| (t.session, t.first.id, t.last.id, t.unread))
-        .collect();
+    assert_eq!(threads.len(), 1);
+    let thread = &threads[0];
     assert_eq!(
-        summary,
-        [
-            (SessionKey::Task(task), question.id, question.id, 1),
-            (SessionKey::Chain(chain), asked.id, reply.id, 1),
-        ]
+        (thread.chain, thread.first.id, thread.last.id, thread.unread),
+        (chain, asked.id, question.id, 2)
     );
+    let mut sessions = thread.sessions.clone();
+    sessions.sort_by_key(|s| s.to_string());
+    assert_eq!(sessions, [SessionKey::Chain(chain), SessionKey::Task(task)]);
+
+    // A second conversation, a thread of its own.
+    let again = s
+        .broker
+        .send(&operator(), to("coder", "and the tests?", None))
+        .await
+        .unwrap();
+    let other = again.correlation_id;
+    s.broker
+        .send(&agent("coder", other), to("user", "green", None))
+        .await
+        .unwrap();
+    let unread = |threads: &[Thread]| -> Vec<(CorrelationId, u32)> {
+        threads.iter().map(|t| (t.chain, t.unread)).collect()
+    };
+    let threads = s
+        .broker
+        .threads(&operator(), &alias("coder"))
+        .await
+        .unwrap();
+    assert_eq!(unread(&threads), [(other, 1), (chain, 2)]);
 
     // Opening one thread leaves the other unread.
     s.broker
@@ -1056,9 +1070,10 @@ async fn the_operator_sees_one_thread_per_agent_and_what_is_unread() {
         .threads(&operator(), &alias("coder"))
         .await
         .unwrap();
-    assert_eq!((threads[0].unread, threads[1].unread), (0, 1));
+    assert_eq!(unread(&threads), [(other, 1), (chain, 0)]);
+    let coder = |c: Vec<Conversation>| c.into_iter().find(|c| c.agent.as_str() == "coder").unwrap();
     assert_eq!(
-        s.broker.conversations(&operator()).await.unwrap()[1].unread,
+        coder(s.broker.conversations(&operator()).await.unwrap()).unread,
         1
     );
 
@@ -1067,12 +1082,12 @@ async fn the_operator_sees_one_thread_per_agent_and_what_is_unread() {
         .mark_read(&operator(), &alias("coder"), reply.id)
         .await
         .unwrap();
-    s.broker
-        .mark_read(&operator(), &alias("coder"), asked.id)
+    let threads = s
+        .broker
+        .threads(&operator(), &alias("coder"))
         .await
         .unwrap();
-    let conversations = s.broker.conversations(&operator()).await.unwrap();
-    assert_eq!(conversations[1].unread, 0);
+    assert_eq!(unread(&threads), [(other, 1), (chain, 0)]);
 }
 
 #[tokio::test]
@@ -1108,7 +1123,7 @@ async fn conversations_are_the_operators_and_messages_must_belong_to_them() {
 }
 
 #[tokio::test]
-async fn what_was_read_before_threads_stays_read_in_each() {
+async fn what_was_read_before_stays_read() {
     let pool = memory_pool().await;
     let mut before = sqlx::migrate!();
     before.migrations = before.migrations[..5].to_vec().into();
@@ -1137,8 +1152,9 @@ async fn what_was_read_before_threads_stays_read_in_each() {
         .threads(&operator(), &alias("coder"))
         .await
         .unwrap();
+    // Both sessions are one chain: one thread, nothing unread.
     let unread: Vec<u32> = threads.iter().map(|t| t.unread).collect();
-    assert_eq!(unread, [0, 0]);
+    assert_eq!(unread, [0]);
 }
 
 #[tokio::test]

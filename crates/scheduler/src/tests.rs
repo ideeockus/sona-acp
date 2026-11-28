@@ -52,7 +52,7 @@ impl MessageBroker for Broker {
         &self,
         _: &Caller,
         _: &Alias,
-        _: Option<SessionKey>,
+        _: Option<CorrelationId>,
         _: Option<MessageId>,
     ) -> Result<Vec<Message>> {
         unimplemented!()

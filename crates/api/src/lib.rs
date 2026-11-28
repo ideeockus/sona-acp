@@ -254,7 +254,7 @@ async fn threads(
 
 #[derive(Deserialize)]
 struct PageQuery {
-    session: Option<String>,
+    chain: Option<String>,
     before: Option<String>,
 }
 
@@ -265,11 +265,11 @@ async fn conversation(
     Query(query): Query<PageQuery>,
 ) -> Reply<Vec<Message>> {
     let agent: Alias = parse(&agent)?;
-    let session = query.session.as_deref().map(parse).transpose()?;
+    let chain = query.chain.as_deref().map(parse).transpose()?;
     let before = query.before.as_deref().map(parse).transpose()?;
     Ok(Json(
         s.broker
-            .conversation(&caller, &agent, session, before)
+            .conversation(&caller, &agent, chain, before)
             .await?,
     ))
 }

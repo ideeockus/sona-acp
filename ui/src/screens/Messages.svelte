@@ -1,5 +1,6 @@
 <!-- The operator's conversations: agents, then an agent's threads, then one thread.
-     A thread is a session of the agent's: the agent remembers only what was said in
+     A thread is a chain: everything that grew out of one message, replies from tasks
+     the agent took up on the way included (D112). The agent remembers what was said in
      it (D78, D105). Opening a thread reads it. -->
 <script lang="ts">
   import Ring from "../components/Ring.svelte";
@@ -12,9 +13,9 @@
   import { session as me } from "../lib/session.svelte";
   import type { Agent, Attachment, Conversation, FileInfo, Message, NewMessage, Status, Task, Thread } from "../lib/types";
 
-  /** `session` is a thread's session key, or "new" for a thread not started yet. */
-  let { alias = null, session = null }: { alias?: string | null; session?: string | null } = $props();
-  const starting = $derived(session === "new");
+  /** `chain` is a thread's chain, or "new" for a thread not started yet. */
+  let { alias = null, chain = null }: { alias?: string | null; chain?: string | null } = $props();
+  const starting = $derived(chain === "new");
 
   const PAGE = 50;
   let agents = $state<Agent[]>([]);
@@ -45,15 +46,15 @@
     if (!alias) return;
     threads = await api.get<Thread[]>(`/conversations/${alias}/threads`);
     // An agent opens on its latest thread, or on a new one when there is none.
-    if (session === null) {
-      navigate(`/messages/${alias}/${threads[0]?.session ?? "new"}`, true);
+    if (chain === null) {
+      navigate(`/messages/${alias}/${threads[0]?.chain ?? "new"}`, true);
       return;
     }
     if (!starting) await refreshThread();
   }, 3000);
 
   async function refreshThread() {
-    const latest = await api.get<Message[]>(`/conversations/${alias}/messages?session=${session}`);
+    const latest = await api.get<Message[]>(`/conversations/${alias}/messages?chain=${chain}`);
     const known = new Set(messages.map((m) => m.id));
     if (messages.length === 0) more = latest.length === PAGE;
     const fresh = latest.filter((m) => !known.has(m.id));
@@ -72,22 +73,22 @@
   async function loadEarlier() {
     const first = messages[0];
     if (!first) return;
-    const older = await api.get<Message[]>(`/conversations/${alias}/messages?session=${session}&before=${first.id}`);
+    const older = await api.get<Message[]>(`/conversations/${alias}/messages?chain=${chain}&before=${first.id}`);
     more = older.length === PAGE;
     messages = [...older, ...messages];
   }
 
   const agent = $derived(agents.find((a) => a.alias === alias));
   const mine = $derived(status?.agents.find((a) => a.alias === alias));
-  const thread = $derived(threads?.find((t) => t.session === session));
+  const thread = $derived(threads?.find((t) => t.chain === chain));
 
   const taskTitle = (id: string | null) => (id ? (tasks.find((t) => t.id === id)?.title ?? null) : null);
   /** A thread is named by its task, or by what opened it. */
   const title = (t: Thread) => taskTitle(t.first.task_id) ?? t.first.subject ?? firstLine(t.first.body);
-  const chainOf = (key: string) => (key.startsWith("chain-") ? key.slice("chain-".length) : null);
-  const stopped = (key: string) => status?.stopped_chains.some((c) => c.chain === chainOf(key)) ?? false;
-  const failing = (key: string) => mine?.failing.find((f) => f.session === key);
-  const working = (key: string) => mine?.run?.session === key;
+  const stopped = (c: string) => status?.stopped_chains.some((s) => s.chain === c) ?? false;
+  /** A thread is stuck when any session it went through is. */
+  const failing = (t: Thread | undefined) => (t ? mine?.failing.find((f) => t.sessions.includes(f.session)) : undefined);
+  const working = (c: string) => mine?.run?.correlation_id === c;
 
   const list = $derived.by(() => {
     const talked = conversations.map((c) => c.agent);
@@ -126,8 +127,9 @@
       to: alias,
       body: body.trim(),
       subject: null,
-      task_id: starting ? null : (thread?.first.task_id ?? null),
-      // Continues this thread's chain (D41); a new thread starts a chain of its own.
+      // Continues the last message: its chain (D41), and its task if the conversation
+      // moved into one, so the agent answers with that task in mind (D112).
+      task_id: starting ? null : (last?.task_id ?? null),
       in_reply_to: starting ? null : (last?.id ?? null),
       attachments,
     };
@@ -136,8 +138,7 @@
       body = "";
       picked = [];
       if (starting) {
-        const key = sent.task_id ? `task-${sent.task_id}` : `chain-${sent.correlation_id}`;
-        navigate(`/messages/${alias}/${key}`);
+        navigate(`/messages/${alias}/${sent.correlation_id}`);
       } else {
         await refreshThread();
       }
@@ -205,20 +206,20 @@
       {#if agent?.state !== "disabled"}
         <a class="row new" href="/messages/{alias}/new" aria-current={starting ? "true" : undefined}>+ New thread</a>
       {/if}
-      {#each threads ?? [] as t (t.session)}
-        {@const f = failing(t.session)}
-        <a class="row" href="/messages/{alias}/{t.session}" aria-current={t.session === session ? "true" : undefined}>
+      {#each threads ?? [] as t (t.chain)}
+        {@const f = failing(t)}
+        <a class="row" href="/messages/{alias}/{t.chain}" aria-current={t.chain === chain ? "true" : undefined}>
           <span class="row-text">
             <span class="row-top">
               <span class="title" class:bold={t.unread > 0}>{title(t)}</span>
               {#if t.unread > 0}<span class="mono small live">{t.unread}</span>{/if}
             </span>
             <span class="mono small muted">
-              {#if working(t.session)}<span class="live"><span class="pulse">●</span> working</span>
+              {#if working(t.chain)}<span class="live"><span class="pulse">●</span> working</span>
               {:else if f}<span class="failed">{f.stuck ? "stuck" : "failing"}</span>
-              {:else if stopped(t.session)}<span class="failed">stopped</span>
+              {:else if stopped(t.chain)}<span class="failed">stopped</span>
               {:else}{since(t.last.created_at, now)}{/if}
-              · {t.session.startsWith("task-") ? "task" : "chain"} {short(t.session)}
+              {#if t.sessions.some((s) => s.startsWith("task-"))} · with a task{/if}
             </span>
           </span>
         </a>
@@ -237,7 +238,7 @@
 
       <ol aria-label="Messages">
         {#if starting}
-          <li class="center muted">A new thread starts a new session: @{alias} will not remember the others.</li>
+          <li class="center muted">A new thread starts a new conversation: @{alias} will not remember the others.</li>
         {/if}
         {#if more}<li class="center"><button class="text-button quiet" onclick={loadEarlier}>Earlier messages</button></li>{/if}
         {#each messages as m, i (m.id)}
@@ -249,6 +250,8 @@
             <span class="meta mono small muted">
               {#if yours}you{:else}<span class="agent" style="--hue: {agent?.hue ?? 28}">{m.from}</span>{/if}
               · {hm(m.created_at)}
+              {#if m.task_id}<a class="topic" href="/tasks/{m.task_id}">task · {taskTitle(m.task_id) ?? short(m.task_id)}</a>{/if}
+              {#if m.external}<span class="topic">external</span>{/if}
               {#if unreadIds.has(m.id)}<span class="live">unread</span>{/if}
             </span>
             {#if m.subject}<b class="subject">{m.subject}</b>{/if}
@@ -274,11 +277,11 @@
             {/if}
           </li>
         {/each}
-        {#if session && working(session)}
+        {#if thread && working(thread.chain)}
           <li class="mono small live"><span class="pulse">●</span> working · {since(mine!.run!.started_at, now)}</li>
         {/if}
-        {#if session}
-          {@const f = failing(session)}
+        {#if thread}
+          {@const f = failing(thread)}
           {#if f}
             <!-- A failing session holds its messages back: say so where they were written. -->
             <li class="failing mono small">
@@ -294,7 +297,7 @@
               {/if}
             </li>
           {/if}
-          {#if stopped(session)}
+          {#if stopped(thread.chain)}
             <li class="failing mono small"><span><span class="failed">stopped</span> · messages wait until the chain is resumed</span></li>
           {/if}
         {/if}
@@ -302,7 +305,7 @@
 
       {#if agent?.state === "disabled"}
         <p class="empty">@{alias} is disabled: it takes no messages until enabled.</p>
-      {:else if agent && session}
+      {:else if agent && chain}
         <form onsubmit={send}>
           <textarea
             rows="3"
@@ -454,6 +457,10 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+  .topic {
+    padding: 0 6px;
+    border: 1px solid var(--line-strong);
   }
   .meta {
     display: flex;

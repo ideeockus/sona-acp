@@ -53,12 +53,12 @@ enum Command {
     /// Unread messages of one session: `task-<id>` or `chain-<id>` (D78).
     Read { session: SessionKey },
     /// Your conversations, latest first; with an agent, your messages with it (D102),
-    /// of one thread with `--session`. Showing them does not mark them read.
+    /// of one thread with `--chain`. Showing them does not mark them read.
     Conversations {
         agent: Option<Alias>,
-        /// One thread: `task-<id>` or `chain-<id>` (D105).
+        /// One thread: the chain it grew in (D112).
         #[arg(long, requires = "agent")]
-        session: Option<SessionKey>,
+        chain: Option<CorrelationId>,
         /// The page just before this message.
         #[arg(long, requires = "agent")]
         before: Option<MessageId>,
@@ -82,7 +82,7 @@ enum Command {
     Stop { chain: CorrelationId },
     /// Delivers a stopped chain again, with what arrived meanwhile (D27).
     Resume { chain: CorrelationId },
-    /// Your threads with an agent, latest first: a session each (D105).
+    /// Your threads with an agent, latest first: a chain each (D112).
     Threads { agent: Alias },
     /// What the model saw and did in a Run (D102).
     Transcript { run: RunId },
@@ -465,12 +465,12 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         }
         Command::Conversations {
             agent: Some(agent),
-            session,
+            chain,
             before,
         } => {
             let mut query = Vec::new();
-            if let Some(session) = session {
-                query.push(format!("session={session}"));
+            if let Some(chain) = chain {
+                query.push(format!("chain={chain}"));
             }
             if let Some(before) = before {
                 query.push(format!("before={before}"));

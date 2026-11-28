@@ -149,7 +149,7 @@ impl SqliteBroker {
         parse(&found)
     }
 
-    /// Where a message between `operator` and `agent` stands, and its session.
+    /// Where a message between `operator` and `agent` stands, and its chain.
     async fn seq_in_conversation(
         &self,
         operator: &str,
@@ -157,7 +157,7 @@ impl SqliteBroker {
         id: MessageId,
     ) -> Result<(i64, String)> {
         let found: Option<(i64, String)> = sqlx::query_as(&format!(
-            "SELECT seq, session FROM messages WHERE id = ?3 AND {BETWEEN}"
+            "SELECT seq, correlation_id FROM messages WHERE id = ?3 AND {BETWEEN}"
         ))
         .bind(operator)
         .bind(agent.as_str())
@@ -168,18 +168,18 @@ impl SqliteBroker {
         found.ok_or_else(|| Error::NotFound(format!("message {id} with {agent}")))
     }
 
-    /// Messages from `agent` the operator has not opened, in one session or in all.
-    async fn unread_from(&self, operator: &str, agent: &str, session: Option<&str>) -> Result<u32> {
+    /// Messages from `agent` the operator has not opened, in one chain or in all.
+    async fn unread_from(&self, operator: &str, agent: &str, chain: Option<&str>) -> Result<u32> {
         let unread: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM messages m
-             LEFT JOIN thread_reads r
-               ON r.reader = ?2 AND r.agent = ?1 AND r.session = m.session
+             LEFT JOIN chain_reads r
+               ON r.reader = ?2 AND r.agent = ?1 AND r.chain = m.correlation_id
              WHERE m.sender = ?1 AND m.recipient = ?2 AND m.seq > COALESCE(r.up_to, 0)
-               AND (?3 IS NULL OR m.session = ?3)",
+               AND (?3 IS NULL OR m.correlation_id = ?3)",
         )
         .bind(agent)
         .bind(operator)
-        .bind(session)
+        .bind(chain)
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
@@ -378,9 +378,10 @@ impl MessageBroker for SqliteBroker {
     async fn threads(&self, caller: &Caller, agent: &Alias) -> Result<Vec<Thread>> {
         require_operator(caller)?;
         let operator = caller.alias().as_str();
-        let sessions: Vec<(String, i64, i64)> = sqlx::query_as(&format!(
-            "SELECT session, MIN(seq), MAX(seq) FROM messages WHERE {BETWEEN}
-             GROUP BY session ORDER BY MAX(seq) DESC LIMIT ?3"
+        let chains: Vec<(String, i64, i64, String)> = sqlx::query_as(&format!(
+            "SELECT correlation_id, MIN(seq), MAX(seq), group_concat(DISTINCT session)
+             FROM messages WHERE {BETWEEN}
+             GROUP BY correlation_id ORDER BY MAX(seq) DESC LIMIT ?3"
         ))
         .bind(operator)
         .bind(agent.as_str())
@@ -390,12 +391,13 @@ impl MessageBroker for SqliteBroker {
         .map_err(internal)?;
 
         let mut threads = Vec::new();
-        for (session, first, last) in sessions {
+        for (chain, first, last, sessions) in chains {
             threads.push(Thread {
                 unread: self
-                    .unread_from(operator, agent.as_str(), Some(&session))
+                    .unread_from(operator, agent.as_str(), Some(&chain))
                     .await?,
-                session: parse(&session)?,
+                chain: parse(&chain)?,
+                sessions: sessions.split(',').map(parse).collect::<Result<_>>()?,
                 first: self.message_at(first).await?,
                 last: self.message_at(last).await?,
             });
@@ -407,7 +409,7 @@ impl MessageBroker for SqliteBroker {
         &self,
         caller: &Caller,
         agent: &Alias,
-        session: Option<SessionKey>,
+        chain: Option<CorrelationId>,
         before: Option<MessageId>,
     ) -> Result<Vec<Message>> {
         require_operator(caller)?;
@@ -418,14 +420,14 @@ impl MessageBroker for SqliteBroker {
         };
         let mut rows: Vec<Row> = sqlx::query_as(&format!(
             "SELECT {MESSAGE_COLUMNS} FROM messages
-             WHERE {BETWEEN} AND seq < ?3 AND (?5 IS NULL OR session = ?5)
+             WHERE {BETWEEN} AND seq < ?3 AND (?5 IS NULL OR correlation_id = ?5)
              ORDER BY seq DESC LIMIT ?4"
         ))
         .bind(operator)
         .bind(agent.as_str())
         .bind(before)
         .bind(PAGE)
-        .bind(session.map(|s| s.to_string()))
+        .bind(chain.map(|c| c.to_string()))
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -436,14 +438,14 @@ impl MessageBroker for SqliteBroker {
     async fn mark_read(&self, caller: &Caller, agent: &Alias, up_to: MessageId) -> Result<()> {
         require_operator(caller)?;
         let operator = caller.alias().as_str();
-        let (seq, session) = self.seq_in_conversation(operator, agent, up_to).await?;
+        let (seq, chain) = self.seq_in_conversation(operator, agent, up_to).await?;
         sqlx::query(
-            "INSERT INTO thread_reads (reader, agent, session, up_to) VALUES (?, ?, ?, ?)
-             ON CONFLICT (reader, agent, session) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)",
+            "INSERT INTO chain_reads (reader, agent, chain, up_to) VALUES (?, ?, ?, ?)
+             ON CONFLICT (reader, agent, chain) DO UPDATE SET up_to = MAX(up_to, excluded.up_to)",
         )
         .bind(operator)
         .bind(agent.as_str())
-        .bind(session)
+        .bind(chain)
         .bind(seq)
         .execute(&self.pool)
         .await

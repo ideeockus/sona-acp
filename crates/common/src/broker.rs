@@ -58,10 +58,13 @@ pub struct Conversation {
     pub unread: u32,
 }
 
-/// One conversation of the operator with an agent: a session of theirs (D78, D105).
+/// One conversation of the operator with an agent: a chain, everything that grew out
+/// of one message (D112). Replies from tasks the agent started on the way are in it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thread {
-    pub session: SessionKey,
+    pub chain: CorrelationId,
+    /// The agent's sessions the thread went through: its chain, the tasks it touched.
+    pub sessions: Vec<SessionKey>,
     /// What started it, for a title.
     pub first: Message,
     pub last: Message,
@@ -125,16 +128,16 @@ pub trait MessageBroker: Send + Sync {
     async fn conversations(&self, caller: &Caller) -> Result<Vec<Conversation>>;
 
     /// The operator's threads with `agent`, the latest first, at most a hundred
-    /// (D105). Operator only.
+    /// (D112). Operator only.
     async fn threads(&self, caller: &Caller, agent: &Alias) -> Result<Vec<Thread>>;
 
     /// A page of the operator's messages with `agent`, oldest first: the newest, or
-    /// those just before `before`; of one thread, or of all. Operator only.
+    /// those just before `before`; of one chain, or of all. Operator only.
     async fn conversation(
         &self,
         caller: &Caller,
         agent: &Alias,
-        session: Option<SessionKey>,
+        chain: Option<CorrelationId>,
         before: Option<MessageId>,
     ) -> Result<Vec<Message>>;
 

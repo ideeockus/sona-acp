@@ -217,9 +217,11 @@ export interface Conversation {
   unread: number;
 }
 
-/** One session of an agent's, as a thread of the operator's (D105). */
+/** A chain with an agent, as a thread of the operator's (D112). */
 export interface Thread {
-  session: SessionKey;
+  chain: string;
+  /** The agent's sessions it went through: its chain, the tasks it touched. */
+  sessions: SessionKey[];
   first: Message;
   last: Message;
   unread: number;
