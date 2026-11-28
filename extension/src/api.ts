@@ -34,8 +34,14 @@ export async function call(method: string, path: string, body?: unknown): Promis
 const FILE_TIMEOUT_MS = 120_000;
 
 /** Stores the bytes in File Storage under `name` and returns the file's info (D106). */
-export async function upload(name: string, contentType: string, content: Uint8Array): Promise<unknown> {
-  const response = await fetch(`${address()}/v1/files?name=${encodeURIComponent(name)}`, {
+export async function upload(
+  name: string,
+  contentType: string,
+  content: Uint8Array,
+  task?: string,
+): Promise<unknown> {
+  const query = `name=${encodeURIComponent(name)}${task ? `&task=${encodeURIComponent(task)}` : ""}`;
+  const response = await fetch(`${address()}/v1/files?${query}`, {
     method: "POST",
     headers: { authorization: `Bearer ${token()}`, "content-type": contentType },
     // A copy on its own ArrayBuffer: what fetch takes as a body.

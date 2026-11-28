@@ -80,7 +80,14 @@ struct Files {
 
 #[async_trait]
 impl FileStorage for Files {
-    async fn upload(&self, _: &Caller, _: &str, _: &str, _: Vec<u8>) -> Result<FileInfo> {
+    async fn upload(
+        &self,
+        _: &Caller,
+        _: &str,
+        _: &str,
+        _: Vec<u8>,
+        _: Option<TaskId>,
+    ) -> Result<FileInfo> {
         unimplemented!()
     }
     async fn info(&self, _: &Caller, _: FileId) -> Result<FileInfo> {
@@ -89,7 +96,7 @@ impl FileStorage for Files {
     async fn download(&self, _: &Caller, _: FileId) -> Result<(FileInfo, Vec<u8>)> {
         unimplemented!()
     }
-    async fn list(&self, _: &Caller) -> Result<Vec<FileInfo>> {
+    async fn list(&self, _: &Caller, _: Option<TaskId>) -> Result<Vec<FileInfo>> {
         unimplemented!()
     }
     async fn share(
@@ -113,6 +120,7 @@ impl FileStorage for Files {
                 size: 3,
                 content_type: "text/plain".to_owned(),
                 owner: caller.alias().clone(),
+                task_id: None,
                 created_at: Timestamp::now(),
             });
         }

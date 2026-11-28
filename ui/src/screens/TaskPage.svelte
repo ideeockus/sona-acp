@@ -3,16 +3,18 @@
 <script lang="ts">
   import Confirm from "../components/Confirm.svelte";
   import { api, ApiError } from "../lib/api";
-  import { clock, dollars, since } from "../lib/format";
+  import { bytes, clock, dollars, since } from "../lib/format";
   import { poll } from "../lib/poll.svelte";
   import { took } from "../lib/runs";
   import { statusLabel } from "../lib/tasks";
-  import type { Change, RunRecord, TaskView } from "../lib/types";
+  import type { Change, FileInfo, RunRecord, TaskView } from "../lib/types";
 
   let { id }: { id: string } = $props();
 
   let view = $state<TaskView | null>(null);
   let runs = $state<RunRecord[]>([]);
+  /** The task's space: files everyone on it shares, its result among them (D111). */
+  let files = $state<FileInfo[]>([]);
   let missing = $state(false);
   let answer = $state("");
   let note = $state("");
@@ -23,7 +25,11 @@
 
   poll(async () => {
     try {
-      [view, runs] = await Promise.all([api.get<TaskView>(`/tasks/${id}`), api.get<RunRecord[]>("/runs")]);
+      [view, runs, files] = await Promise.all([
+        api.get<TaskView>(`/tasks/${id}`),
+        api.get<RunRecord[]>("/runs"),
+        api.get<FileInfo[]>(`/files?task=${id}`),
+      ]);
       now = Date.now();
     } catch (e) {
       missing = true;
@@ -122,6 +128,18 @@
           </div>
         {/if}
       </section>
+
+      {#if files.length}
+        <section class="panel">
+          <div class="panel-head"><h2>Files</h2><span class="mono small muted">shared by everyone on the task</span></div>
+          {#each files as f (f.id)}
+            <div class="file">
+              <a class="mono" href="/v1/files/{f.id}" download={f.name}>↓ {f.name}</a>
+              <span class="mono small muted">{bytes(f.size)} · @{f.owner} · {since(f.created_at, now)} ago</span>
+            </div>
+          {/each}
+        </section>
+      {/if}
 
       <section class="panel">
         <div class="panel-head"><h2>Runs</h2><a class="mono small muted" href="/journal?task={id}">Journal</a></div>
@@ -247,5 +265,14 @@
   }
   dd {
     margin: 0;
+  }
+  .file {
+    padding: 10px 18px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px 16px;
+    border-top: 1px solid var(--line);
   }
 </style>

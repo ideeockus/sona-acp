@@ -1,6 +1,6 @@
 //! The contract of File Storage (D5, D56, D106).
 
-use crate::{Alias, Caller, FileId, Result, Timestamp};
+use crate::{Alias, Caller, FileId, Result, TaskId, Timestamp};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,9 @@ pub struct FileInfo {
     pub content_type: String,
     /// Who uploaded it: its space is theirs (D56).
     pub owner: Alias,
+    /// In a task's space: the task's participants read it too (D56, D111).
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
     pub created_at: Timestamp,
 }
 
@@ -39,25 +42,27 @@ impl From<FileInfo> for Attachment {
 }
 
 /// Files of agents and the operator, kept in S3 (D106). A file is read by its owner,
-/// by those it was shared with, and by the operator.
+/// by those it was shared with, by the participants of its task, and by the operator.
 #[async_trait]
 pub trait FileStorage: Send + Sync {
-    /// Stores the content in the caller's space. Refused when it carries an active
-    /// Run token (D24).
+    /// Stores the content in the caller's space, or in the space of a task the caller
+    /// takes part in. Refused when it carries an active Run token (D24).
     async fn upload(
         &self,
         caller: &Caller,
         name: &str,
         content_type: &str,
         content: Vec<u8>,
+        task: Option<TaskId>,
     ) -> Result<FileInfo>;
 
     async fn info(&self, caller: &Caller, file: FileId) -> Result<FileInfo>;
 
     async fn download(&self, caller: &Caller, file: FileId) -> Result<(FileInfo, Vec<u8>)>;
 
-    /// What the caller may read, the newest first, at most two hundred.
-    async fn list(&self, caller: &Caller) -> Result<Vec<FileInfo>>;
+    /// What the caller may read, the newest first, at most two hundred: its own and
+    /// shared files, or the files of one task it takes part in.
+    async fn list(&self, caller: &Caller, task: Option<TaskId>) -> Result<Vec<FileInfo>>;
 
     /// Lets `with` read the files, as when they are attached to a message to them.
     /// The caller must be able to read every one.

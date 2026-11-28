@@ -157,11 +157,14 @@ const fileUpload = defineTool({
     "Store a file from your workdir in File Storage. Returns its id: attach it to a message with send_message's files.",
   parameters: Type.Object({
     path: Type.String({ description: "The file in your workdir" }),
+    task_id: Type.Optional(
+      Id("Put it in this task's space instead of yours: everyone on the task can read it, e.g. a result"),
+    ),
   }),
   async execute(_id, p) {
     const content = await readFile(p.path);
     const type = TYPES[extname(p.path).toLowerCase()] ?? "application/octet-stream";
-    return reply(await upload(basename(p.path), type, content));
+    return reply(await upload(basename(p.path), type, content, p.task_id));
   },
 });
 
@@ -184,10 +187,11 @@ const fileDownload = defineTool({
 const fileList = defineTool({
   name: "file_list",
   label: "List files",
-  description: "The files you may read: yours and those attached to messages to you, newest first.",
-  parameters: Type.Object({}),
-  async execute() {
-    return reply(await call("GET", "/v1/files"));
+  description:
+    "The files you may read, newest first: yours and those attached to messages to you, or with task_id the files of that task.",
+  parameters: Type.Object({ task_id: Type.Optional(Id("A task you take part in")) }),
+  async execute(_id, p) {
+    return reply(await call("GET", p.task_id ? `/v1/files?task=${encodeURIComponent(p.task_id)}` : "/v1/files"));
   },
 });
 

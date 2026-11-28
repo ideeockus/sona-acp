@@ -375,6 +375,7 @@ impl Files {
             size: 4,
             content_type: content_type.to_owned(),
             owner: "coder".parse().unwrap(),
+            task_id: None,
             created_at: Timestamp::now(),
         }
     }
@@ -388,10 +389,12 @@ impl FileStorage for Files {
         name: &str,
         content_type: &str,
         content: Vec<u8>,
+        task: Option<TaskId>,
     ) -> Result<FileInfo> {
         Ok(FileInfo {
             size: content.len() as u64,
             owner: caller.alias().clone(),
+            task_id: task,
             ..Self::file(name, content_type)
         })
     }
@@ -408,7 +411,7 @@ impl FileStorage for Files {
         };
         Ok((file, b"data".to_vec()))
     }
-    async fn list(&self, _: &Caller) -> Result<Vec<FileInfo>> {
+    async fn list(&self, _: &Caller, _: Option<TaskId>) -> Result<Vec<FileInfo>> {
         Ok(Vec::new())
     }
     async fn share(&self, _: &Caller, files: &[FileId], _: &Alias) -> Result<Vec<FileInfo>> {

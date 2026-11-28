@@ -102,6 +102,16 @@ async fn serve(config: Config) -> Result<(), Failure> {
     );
     let registry =
         Arc::new(SqliteRegistry::new(database(&config.data_dir, "registry").await?).await?);
+
+    let tasks = Arc::new(
+        SqliteTaskManager::new(
+            database(&config.data_dir, "tasks").await?,
+            registry.clone(),
+            registry.clone(),
+            journal.clone(),
+        )
+        .await?,
+    );
     let files: Arc<dyn FileStorage> = match &config.storage {
         Some(storage) => {
             let objects = S3Store::connect(S3Config {
@@ -116,6 +126,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
                     database(&config.data_dir, "files").await?,
                     Arc::new(objects),
                     registry.clone(),
+                    tasks.clone(),
                     journal.clone(),
                 )
                 .await?,
@@ -134,15 +145,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
         )
         .await?,
     );
-    let tasks = Arc::new(
-        SqliteTaskManager::new(
-            database(&config.data_dir, "tasks").await?,
-            registry.clone(),
-            registry.clone(),
-            journal.clone(),
-        )
-        .await?,
-    );
+
     let gateway = Arc::new(Gateway::new(registry.clone(), journal.clone()));
     let skills = Arc::new(
         SqliteSkills::new(

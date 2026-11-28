@@ -1,5 +1,6 @@
 use super::*;
 use control_plane_common::registry::{Secret, Session};
+use control_plane_common::tasks::{NewTask, Task, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{CorrelationId, RunId};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashMap;
@@ -61,6 +62,49 @@ impl Credentials for OneActiveToken {
     }
 }
 
+/// One task, `TASK`, with @coder and @manager on it.
+struct OneTask;
+
+const TASK: &str = "01a22200-0000-7000-8000-000000000001";
+
+#[async_trait]
+impl TaskManager for OneTask {
+    async fn create_task(&self, _: &Caller, _: NewTask) -> Result<Task> {
+        unimplemented!()
+    }
+    async fn get_task(&self, caller: &Caller, id: TaskId) -> Result<TaskView> {
+        if id.to_string() != TASK {
+            return Err(Error::NotFound(format!("task {id}")));
+        }
+        let on_it = ["coder", "manager"].contains(&caller.alias().as_str());
+        if !on_it && !matches!(caller, Caller::Operator { .. }) {
+            return Err(Error::Forbidden(format!("{} is not on it", caller.alias())));
+        }
+        Ok(TaskView {
+            task: Task {
+                id,
+                title: "Calculator".to_owned(),
+                context: String::new(),
+                status: TaskStatus::InProgress,
+                creator: alias("manager"),
+                created_at: Timestamp::now(),
+                parent_id: None,
+                assignee: Some(alias("coder")),
+                members: Vec::new(),
+                deadline: None,
+                result: None,
+            },
+            history: Vec::new(),
+        })
+    }
+    async fn update_task(&self, _: &Caller, _: TaskId, _: TaskUpdate) -> Result<Task> {
+        unimplemented!()
+    }
+    async fn list_tasks(&self, _: &Caller, _: Option<TaskStatus>) -> Result<Vec<Task>> {
+        unimplemented!()
+    }
+}
+
 #[derive(Default)]
 struct Recorded(Mutex<Vec<Event>>);
 
@@ -93,6 +137,7 @@ async fn setup() -> Setup {
         pool,
         objects.clone(),
         Arc::new(OneActiveToken),
+        Arc::new(OneTask),
         journal.clone(),
     )
     .await
@@ -133,6 +178,7 @@ async fn a_file_is_kept_under_its_owner_and_comes_back_whole() {
             "calculator/index.html",
             "text/html; charset=utf-8",
             content.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -158,7 +204,13 @@ async fn others_see_a_file_only_once_it_is_shared_with_them() {
     let s = setup().await;
     let file = s
         .files
-        .upload(&agent("coder"), "notes.md", "text/markdown", b"hi".to_vec())
+        .upload(
+            &agent("coder"),
+            "notes.md",
+            "text/markdown",
+            b"hi".to_vec(),
+            None,
+        )
         .await
         .unwrap();
     let manager = agent("manager");
@@ -166,7 +218,7 @@ async fn others_see_a_file_only_once_it_is_shared_with_them() {
         s.files.info(&manager, file.id).await,
         Err(Error::NotFound(_))
     ));
-    assert!(s.files.list(&manager).await.unwrap().is_empty());
+    assert!(s.files.list(&manager, None).await.unwrap().is_empty());
     // The operator reads everything.
     assert_eq!(s.files.info(&operator(), file.id).await.unwrap(), file);
 
@@ -183,7 +235,7 @@ async fn others_see_a_file_only_once_it_is_shared_with_them() {
     assert_eq!(shared, std::slice::from_ref(&file));
     assert_eq!(s.files.download(&manager, file.id).await.unwrap().1, b"hi");
     assert_eq!(
-        s.files.list(&manager).await.unwrap(),
+        s.files.list(&manager, None).await.unwrap(),
         std::slice::from_ref(&file)
     );
     // Sharing twice is fine.
@@ -199,7 +251,7 @@ async fn a_file_with_an_active_run_token_is_refused_and_journaled() {
     let content = format!("export TOKEN={LEAKED}").into_bytes();
     assert!(matches!(
         s.files
-            .upload(&agent("coder"), "env.sh", "text/plain", content)
+            .upload(&agent("coder"), "env.sh", "text/plain", content, None)
             .await,
         Err(Error::Forbidden(_))
     ));
@@ -215,7 +267,13 @@ async fn names_and_types_are_cleaned_and_size_is_capped() {
     let coder = agent("coder");
     let file = s
         .files
-        .upload(&coder, "..\\..\\evil\u{7}.sh", "not a type", b"x".to_vec())
+        .upload(
+            &coder,
+            "..\\..\\evil\u{7}.sh",
+            "not a type",
+            b"x".to_vec(),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -226,7 +284,7 @@ async fn names_and_types_are_cleaned_and_size_is_capped() {
         assert!(
             matches!(
                 s.files
-                    .upload(&coder, bad, "text/plain", b"x".to_vec())
+                    .upload(&coder, bad, "text/plain", b"x".to_vec(), None)
                     .await,
                 Err(Error::InvalidInput(_))
             ),
@@ -236,7 +294,7 @@ async fn names_and_types_are_cleaned_and_size_is_capped() {
     let huge = vec![0; MAX_FILE_BYTES + 1];
     assert!(matches!(
         s.files
-            .upload(&coder, "big.bin", "application/octet-stream", huge)
+            .upload(&coder, "big.bin", "application/octet-stream", huge, None)
             .await,
         Err(Error::InvalidInput(_))
     ));
@@ -247,11 +305,11 @@ async fn without_storage_configured_every_call_says_so() {
     let files = NoFileStorage;
     assert!(matches!(
         files
-            .upload(&operator(), "a", "text/plain", Vec::new())
+            .upload(&operator(), "a", "text/plain", Vec::new(), None)
             .await,
         Err(Error::InvalidInput(_))
     ));
-    assert!(files.list(&operator()).await.unwrap().is_empty());
+    assert!(files.list(&operator(), None).await.unwrap().is_empty());
     // A message without attachments needs no storage.
     assert!(
         files
@@ -260,4 +318,54 @@ async fn without_storage_configured_every_call_says_so() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn a_tasks_files_are_shared_by_whoever_is_on_it() {
+    let s = setup().await;
+    let task: TaskId = TASK.parse().unwrap();
+    let result = s
+        .files
+        .upload(
+            &agent("coder"),
+            "game.html",
+            "text/html",
+            b"<canvas>".to_vec(),
+            Some(task),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.task_id, Some(task));
+    let keys: Vec<String> = s.objects.0.lock().unwrap().keys().cloned().collect();
+    assert_eq!(keys, [format!("tasks/{task}/{}", result.id)]);
+
+    // The manager is on the task: reads it and sees it in the task's files.
+    assert_eq!(
+        s.files
+            .download(&agent("manager"), result.id)
+            .await
+            .unwrap()
+            .1,
+        b"<canvas>"
+    );
+    assert_eq!(
+        s.files.list(&agent("manager"), Some(task)).await.unwrap(),
+        [result.clone()]
+    );
+    // Someone off the task neither reads it nor lists the task, nor uploads into it.
+    let tester = agent("tester");
+    assert!(matches!(
+        s.files.download(&tester, result.id).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        s.files.list(&tester, Some(task)).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        s.files
+            .upload(&tester, "x.txt", "text/plain", b"x".to_vec(), Some(task))
+            .await,
+        Err(Error::Forbidden(_))
+    ));
 }

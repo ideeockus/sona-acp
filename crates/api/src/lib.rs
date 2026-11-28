@@ -405,6 +405,13 @@ async fn check_model(s: &Services, caller: &Caller, model: &ModelRef) -> Result<
 #[derive(Deserialize)]
 struct UploadQuery {
     name: String,
+    /// Into this task's space (D111).
+    task: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FilesQuery {
+    task: Option<String>,
 }
 
 /// The body is the file as is; its type comes in `Content-Type` (D106).
@@ -420,9 +427,10 @@ async fn upload_file(
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
+    let task = query.task.as_deref().map(parse).transpose()?;
     let file = s
         .files
-        .upload(&caller, &query.name, content_type, body.to_vec())
+        .upload(&caller, &query.name, content_type, body.to_vec(), task)
         .await?;
     Ok((StatusCode::CREATED, Json(file)))
 }
@@ -430,8 +438,10 @@ async fn upload_file(
 async fn list_files(
     State(s): Shared,
     Authenticated(caller): Authenticated,
+    Query(query): Query<FilesQuery>,
 ) -> Reply<Vec<FileInfo>> {
-    Ok(Json(s.files.list(&caller).await?))
+    let task = query.task.as_deref().map(parse).transpose()?;
+    Ok(Json(s.files.list(&caller, task).await?))
 }
 
 async fn file_info(

@@ -119,6 +119,8 @@ export interface Attachment {
 export interface FileInfo extends Attachment {
   content_type: string;
   owner: Alias;
+  /** In a task's space (D111). */
+  task_id: string | null;
   created_at: Time;
 }
 

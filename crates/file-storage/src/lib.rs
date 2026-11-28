@@ -12,13 +12,16 @@ use async_trait::async_trait;
 use control_plane_common::files::{FileInfo, FileStorage, MAX_FILE_BYTES};
 use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
 use control_plane_common::registry::Credentials;
-use control_plane_common::{Alias, Caller, Error, FileId, Result, Timestamp};
+use control_plane_common::tasks::TaskManager;
+use control_plane_common::{Alias, Caller, Error, FileId, Result, TaskId, Timestamp};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 use std::sync::Arc;
 
 /// Files one listing returns.
 const LIST_LIMIT: i64 = 200;
+
+const COLUMNS: &str = "id, name, size, content_type, owner, task_id, created_at";
 
 /// Where the content of files goes.
 #[async_trait]
@@ -31,6 +34,8 @@ pub struct SqliteFileStorage {
     pool: SqlitePool,
     objects: Arc<dyn ObjectStore>,
     credentials: Arc<dyn Credentials>,
+    /// Who takes part in a task: they share its space (D111).
+    tasks: Arc<dyn TaskManager>,
     journal: Arc<dyn JournalWriter>,
 }
 
@@ -39,6 +44,7 @@ impl SqliteFileStorage {
         pool: SqlitePool,
         objects: Arc<dyn ObjectStore>,
         credentials: Arc<dyn Credentials>,
+        tasks: Arc<dyn TaskManager>,
         journal: Arc<dyn JournalWriter>,
     ) -> Result<Self> {
         sqlx::migrate!()
@@ -49,6 +55,7 @@ impl SqliteFileStorage {
             pool,
             objects,
             credentials,
+            tasks,
             journal,
         })
     }
@@ -56,19 +63,40 @@ impl SqliteFileStorage {
     /// The file, if the caller may read it. A file they may not read does not exist
     /// for them: knowing an id gives nothing.
     async fn readable(&self, caller: &Caller, file: FileId) -> Result<FileInfo> {
-        let row: Option<Row> = sqlx::query_as(
-            "SELECT id, name, size, content_type, owner, created_at FROM files
-             WHERE id = ?1 AND (?3 OR owner = ?2
-                 OR EXISTS (SELECT 1 FROM shares WHERE file = ?1 AND reader = ?2))",
-        )
-        .bind(file.to_string())
-        .bind(caller.alias().as_str())
-        .bind(matches!(caller, Caller::Operator { .. }))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal)?;
-        row.ok_or_else(|| Error::NotFound(format!("file {file}")))?
-            .into_info()
+        let missing = || Error::NotFound(format!("file {file}"));
+        let row: Option<Row> = sqlx::query_as(&format!("SELECT {COLUMNS} FROM files WHERE id = ?"))
+            .bind(file.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)?;
+        let info = row.ok_or_else(missing)?.into_info()?;
+        if matches!(caller, Caller::Operator { .. }) || &info.owner == caller.alias() {
+            return Ok(info);
+        }
+        let shared: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM shares WHERE file = ? AND reader = ?")
+                .bind(file.to_string())
+                .bind(caller.alias().as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        if shared.is_some() {
+            return Ok(info);
+        }
+        // Task Manager knows who takes part now: a member added later reads the files,
+        // one removed no longer does.
+        match info.task_id {
+            Some(task) if self.takes_part(caller, task).await? => Ok(info),
+            _ => Err(missing()),
+        }
+    }
+
+    async fn takes_part(&self, caller: &Caller, task: TaskId) -> Result<bool> {
+        match self.tasks.get_task(caller, task).await {
+            Ok(_) => Ok(true),
+            Err(Error::Forbidden(_) | Error::NotFound(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     async fn deny(&self, caller: &Caller, reason: &str) -> Result<()> {
@@ -90,8 +118,17 @@ impl FileStorage for SqliteFileStorage {
         name: &str,
         content_type: &str,
         content: Vec<u8>,
+        task: Option<TaskId>,
     ) -> Result<FileInfo> {
         let name = file_name(name)?;
+        if let Some(task) = task
+            && !self.takes_part(caller, task).await?
+        {
+            return Err(Error::Forbidden(format!(
+                "{} does not take part in task {task}",
+                caller.alias()
+            )));
+        }
         if content.len() > MAX_FILE_BYTES {
             return Err(Error::InvalidInput(format!(
                 "a file may weigh at most {} MiB",
@@ -114,6 +151,7 @@ impl FileStorage for SqliteFileStorage {
             size: content.len() as u64,
             content_type: media_type(content_type),
             owner: caller.alias().clone(),
+            task_id: task,
             created_at: Timestamp::now(),
         };
         // Content first: a row without its object would be a file nobody can download.
@@ -121,14 +159,15 @@ impl FileStorage for SqliteFileStorage {
             .put(&key(&info), &content, &info.content_type)
             .await?;
         sqlx::query(
-            "INSERT INTO files (id, name, size, content_type, owner, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO files (id, name, size, content_type, owner, task_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(info.id.to_string())
         .bind(&info.name)
         .bind(i64::try_from(info.size).map_err(|e| Error::Internal(e.to_string()))?)
         .bind(&info.content_type)
         .bind(info.owner.as_str())
+        .bind(info.task_id.map(|id| id.to_string()))
         .bind(info.created_at.as_unix_millis())
         .execute(&self.pool)
         .await
@@ -146,17 +185,34 @@ impl FileStorage for SqliteFileStorage {
         Ok((info, content))
     }
 
-    async fn list(&self, caller: &Caller) -> Result<Vec<FileInfo>> {
-        let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, name, size, content_type, owner, created_at FROM files
-             WHERE ?2 OR owner = ?1 OR id IN (SELECT file FROM shares WHERE reader = ?1)
-             ORDER BY created_at DESC, id DESC LIMIT ?3",
-        )
-        .bind(caller.alias().as_str())
-        .bind(matches!(caller, Caller::Operator { .. }))
-        .bind(LIST_LIMIT)
-        .fetch_all(&self.pool)
-        .await
+    async fn list(&self, caller: &Caller, task: Option<TaskId>) -> Result<Vec<FileInfo>> {
+        let rows: Vec<Row> = match task {
+            Some(task) => {
+                if !self.takes_part(caller, task).await? {
+                    return Err(Error::NotFound(format!("task {task}")));
+                }
+                sqlx::query_as(&format!(
+                    "SELECT {COLUMNS} FROM files WHERE task_id = ?
+                     ORDER BY created_at DESC, id DESC LIMIT ?"
+                ))
+                .bind(task.to_string())
+                .bind(LIST_LIMIT)
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_as(&format!(
+                    "SELECT {COLUMNS} FROM files
+                     WHERE ?2 OR owner = ?1 OR id IN (SELECT file FROM shares WHERE reader = ?1)
+                     ORDER BY created_at DESC, id DESC LIMIT ?3"
+                ))
+                .bind(caller.alias().as_str())
+                .bind(matches!(caller, Caller::Operator { .. }))
+                .bind(LIST_LIMIT)
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
         .map_err(internal)?;
         rows.into_iter().map(Row::into_info).collect()
     }
@@ -188,7 +244,14 @@ pub struct NoFileStorage;
 
 #[async_trait]
 impl FileStorage for NoFileStorage {
-    async fn upload(&self, _: &Caller, _: &str, _: &str, _: Vec<u8>) -> Result<FileInfo> {
+    async fn upload(
+        &self,
+        _: &Caller,
+        _: &str,
+        _: &str,
+        _: Vec<u8>,
+        _: Option<TaskId>,
+    ) -> Result<FileInfo> {
         Err(not_configured())
     }
     async fn info(&self, _: &Caller, _: FileId) -> Result<FileInfo> {
@@ -197,7 +260,7 @@ impl FileStorage for NoFileStorage {
     async fn download(&self, _: &Caller, _: FileId) -> Result<(FileInfo, Vec<u8>)> {
         Err(not_configured())
     }
-    async fn list(&self, _: &Caller) -> Result<Vec<FileInfo>> {
+    async fn list(&self, _: &Caller, _: Option<TaskId>) -> Result<Vec<FileInfo>> {
         Ok(Vec::new())
     }
     async fn share(&self, _: &Caller, files: &[FileId], _: &Alias) -> Result<Vec<FileInfo>> {
@@ -213,9 +276,12 @@ fn not_configured() -> Error {
     Error::InvalidInput("File Storage is not configured: see [storage] in the config".to_owned())
 }
 
-/// The object's key: the owner's space and the id, never the name.
+/// The object's key: the owner's or the task's space and the id, never the name.
 fn key(file: &FileInfo) -> String {
-    format!("{}/{}", file.owner.as_str(), file.id)
+    match file.task_id {
+        Some(task) => format!("tasks/{task}/{}", file.id),
+        None => format!("{}/{}", file.owner.as_str(), file.id),
+    }
 }
 
 /// The last part of whatever path came as a name, without control characters.
@@ -264,6 +330,7 @@ struct Row {
     size: i64,
     content_type: String,
     owner: String,
+    task_id: Option<String>,
     created_at: i64,
 }
 
@@ -275,6 +342,7 @@ impl Row {
             size: u64::try_from(self.size).map_err(|e| Error::Internal(e.to_string()))?,
             content_type: self.content_type,
             owner: parse(&self.owner)?,
+            task_id: self.task_id.as_deref().map(parse).transpose()?,
             created_at: Timestamp::from_unix_millis(self.created_at)?,
         })
     }
