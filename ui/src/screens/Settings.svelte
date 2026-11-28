@@ -52,10 +52,6 @@
     color: var(--text);
     font-size: 13px;
   }
-  .choice input {
-    width: auto;
-    accent-color: var(--accent);
-  }
   .row {
     display: flex;
     justify-content: space-between;

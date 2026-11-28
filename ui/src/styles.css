@@ -229,7 +229,7 @@ textarea {
   text-underline-offset: 3px;
 }
 
-input,
+input:not([type="radio"], [type="checkbox"]),
 select,
 textarea {
   width: 100%;
@@ -237,13 +237,22 @@ textarea {
   border: 1px solid var(--line-strong);
   background: var(--bg);
 }
-input:focus,
+input:not([type="radio"], [type="checkbox"]):focus,
 select:focus,
 textarea:focus,
+input:is([type="radio"], [type="checkbox"]):focus-visible,
 button:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+/* Choices keep their native shape; the ring hugs the control, a circle for a radio. */
+input:is([type="radio"], [type="checkbox"]) {
+  margin: 0;
+  accent-color: var(--accent);
+}
+input[type="radio"] {
+  border-radius: 50%;
 }
 label {
   display: flex;

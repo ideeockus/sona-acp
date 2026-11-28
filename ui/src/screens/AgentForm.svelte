@@ -234,9 +234,7 @@
     font-size: 13px;
   }
   .check input {
-    width: auto;
     margin-top: 3px;
-    accent-color: var(--accent);
   }
   .check b {
     font-weight: 500;

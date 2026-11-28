@@ -4,7 +4,7 @@
   import Ring from "../components/Ring.svelte";
   import { look } from "../lib/agent";
   import { api, ApiError } from "../lib/api";
-  import { since, short } from "../lib/format";
+  import { firstLine, since, sessionLabel, short } from "../lib/format";
   import { poll } from "../lib/poll.svelte";
   import { session } from "../lib/session.svelte";
   import type { Agent, Conversation, Message, NewMessage, Status, Task } from "../lib/types";
@@ -128,8 +128,16 @@
     }
   }
 
+  /** Enter sends, Shift+Enter breaks the line; Enter that ends an IME composition does neither. */
   function onKey(event: KeyboardEvent) {
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void send();
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    void send();
+  }
+
+  async function act(path: string) {
+    await api.post(path);
+    status = await api.get<Status>("/status");
   }
 </script>
 
@@ -194,6 +202,21 @@
         {#if me?.run}
           <li class="mono small live working">● working · {since(me.run.started_at, now)}</li>
         {/if}
+        {#each me?.failing ?? [] as f (f.session)}
+          <!-- A failing session holds its messages back: say so where they were written. -->
+          <li class="failing mono small">
+            <span>
+              <span class="failed">{f.stuck ? "stuck" : "failed, will retry"}</span>
+              · {sessionLabel(f.session)} · <span class="muted" title={f.last_error}>{firstLine(f.last_error)}</span>
+            </span>
+            {#if f.stuck}
+              <span class="actions">
+                <button class="text-button" onclick={() => act(`/agents/${alias}/sessions/${f.session}/retry`)}>Retry</button>
+                <button class="text-button quiet" onclick={() => act(`/agents/${alias}/sessions/${f.session}/skip`)}>Skip</button>
+              </span>
+            {/if}
+          </li>
+        {/each}
       </ol>
 
       {#if agent?.state === "disabled"}
@@ -202,7 +225,7 @@
         <form onsubmit={send}>
           <label>
             Message to {alias}
-            <textarea rows="3" placeholder="Write to {alias}…" bind:value={body} onkeydown={onKey}></textarea>
+            <textarea rows="3" placeholder="Write to {alias}… Enter sends, Shift+Enter for a new line" bind:value={body} onkeydown={onKey}></textarea>
           </label>
           <div class="send">
             <label class="about">
@@ -336,6 +359,18 @@
   }
   .subject {
     font-weight: 500;
+  }
+  .failing {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    border-left: 2px solid var(--danger-line);
+  }
+  .failing .actions {
+    display: flex;
+    gap: 16px;
   }
   form {
     padding: 16px 32px 24px;
