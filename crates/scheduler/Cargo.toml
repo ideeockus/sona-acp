@@ -1,0 +1,19 @@
+[package]
+name = "control-plane-scheduler"
+description = "Scheduler: messages to agents on cron schedules, from @scheduler."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+control-plane-common.workspace = true
+croner.workspace = true
+jiff.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

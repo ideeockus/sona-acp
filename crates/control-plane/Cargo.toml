@@ -1,0 +1,35 @@
+[package]
+name = "control-plane"
+description = "The control plane binary: all components in one process (D20)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum.workspace = true
+clap.workspace = true
+control-plane-agent-journal.workspace = true
+control-plane-agent-memory.workspace = true
+control-plane-agent-registry.workspace = true
+control-plane-agent-runtime.workspace = true
+control-plane-api.workspace = true
+control-plane-common.workspace = true
+control-plane-file-storage.workspace = true
+control-plane-message-broker.workspace = true
+control-plane-scheduler.workspace = true
+control-plane-skills.workspace = true
+control-plane-task-manager.workspace = true
+control-plane-tool-gateway.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "time"] }

@@ -1,0 +1,31 @@
+# The UI and the API on one origin (D98): Caddy gets the certificate, serves the
+# built UI and passes /v1 to the control plane. One origin means no CORS, and the
+# session cookie (Secure, Path=/v1) reaches only the API.
+#
+# Replace the domain, the UI directory and the address of the API, which is
+# `listen` from control-plane.toml. Caddy passes the Host header as it came,
+# and the API compares it with Origin on every change made by a session (D103).
+
+dash.example.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	handle /v1/* {
+		reverse_proxy 172.30.0.1:7700
+	}
+
+	# npm --prefix ui ci && npm --prefix ui run build, then copy ui/dist here.
+	# The router lives in the page, so any other path gets index.html.
+	handle {
+		root * /opt/control-plane/ui
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,0 +1,41 @@
+# The control plane configuration: control-plane --config <file> init | serve
+# No secrets here: provider_env names variables of the control plane's environment.
+
+operator = "user"
+data_dir = "/var/lib/control-plane"
+agent_image = "sona-plane-agent:dev"
+extension = "/opt/control-plane/extension/src"
+# models_json = "/etc/control-plane/models.json"
+# provider_env = ["ANTHROPIC_API_KEY"]
+# journal_retention_days = 7
+
+# How agents reach the API (D88). The network is created once, by the operator:
+#
+#   docker network create --subnet 172.30.0.0/24 \
+#     -o com.docker.network.bridge.enable_icc=false sona-agents
+#
+# Linux: the API listens on the network's gateway, which is the host itself.
+listen = "172.30.0.1:7700"
+api_url = "http://172.30.0.1:7700"
+agent_network = "sona-agents"
+
+# macOS with OrbStack or Docker Desktop: the gateway lives inside their VM, and
+# host.docker.internal leads to the host's loopback instead.
+# listen = "127.0.0.1:7700"
+# api_url = "http://host.docker.internal:7700"
+# agent_network = "sona-agents"
+
+# Safeguards against a runaway chain (D100): a trip stops the chain, and
+# `sapctl resume` starts its count afresh. These are the defaults.
+# [limits]
+# runs_per_chain = 30
+# cost_per_chain_usd = 5.0
+# wakes_per_agent = 20
+# wake_window_minutes = 10
+
+# File Storage (D106) on RustFS from deploy/compose.yaml. The keys come from
+# SONA_S3_ACCESS_KEY and SONA_S3_SECRET_KEY, the same two compose reads.
+# Without [storage], files are off.
+# [storage]
+# endpoint = "http://127.0.0.1:9000"
+# bucket = "sona"

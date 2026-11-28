@@ -1,0 +1,309 @@
+/* Tokens from docs/ui.md. The dark theme is the main one. Any element may take a
+   theme of its own with data-theme, as the color samples do. */
+:root,
+[data-theme="dark"] {
+  --bg: #0b0806;
+  --surface: #110d0a;
+  --line: #241c16;
+  --line-strong: #3a2e25;
+  --text: #efe6dc;
+  --muted: #a8927e;
+  --accent: #f7871b;
+  --accent-text: #f7871b;
+  --accent-soft: rgba(247, 135, 27, 0.09);
+  --danger: #e58a74;
+  --danger-line: #b0503a;
+  --idle: #6e5a49;
+  --recent: #8a7564;
+  /* An agent's color: its hue, with lightness set per theme so the name reads. */
+  --agent-l: 70%;
+  --agent-s: 60%;
+  --sans: "Sora", "Avenir Next", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #f6f2ec;
+  --surface: #fffdf9;
+  --line: #e7ded3;
+  --line-strong: #d3c6b7;
+  --text: #1c1611;
+  --muted: #77634f;
+  --accent-text: #b05a00;
+  --accent-soft: rgba(247, 135, 27, 0.12);
+  --danger: #b4432c;
+  --danger-line: #c4624a;
+  --idle: #b9a898;
+  --recent: #9c8774;
+  --agent-l: 36%;
+  --agent-s: 55%;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 var(--sans);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-text);
+}
+
+h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+p {
+  margin: 0;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.small {
+  font-size: 11px;
+}
+.muted {
+  color: var(--muted);
+}
+.live {
+  color: var(--accent-text);
+}
+.failed {
+  color: var(--danger);
+}
+.agent {
+  color: hsl(var(--hue, 28) var(--agent-s) var(--agent-l));
+}
+
+/* Screen frame: header with title and numbers, then panels. */
+.screen-header {
+  min-height: 56px;
+  padding: 0 32px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.screen-body {
+  padding: 24px 32px 40px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: flex-start;
+}
+.numbers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+.numbers b {
+  font-weight: 400;
+  color: var(--text);
+}
+.numbers b.live {
+  color: var(--accent-text);
+}
+
+/* Panels have square corners; only interactive things are rounded. */
+.panel {
+  flex: 1 1 100%;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.panel-head {
+  padding: 14px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.panel-body {
+  padding: 14px 18px;
+}
+.empty {
+  padding: 14px 18px;
+  color: var(--muted);
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th {
+  padding: 10px 18px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+td {
+  padding: 10px 18px;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+}
+td.mono,
+td .mono {
+  font-size: 12px;
+}
+tr.link:hover td {
+  background: var(--accent-soft);
+  cursor: pointer;
+}
+
+/* One filled button per screen; the rest outlined or text. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  border-radius: 4px;
+}
+/* Links styled as buttons get the same shape (docs/ui.md: 4 px on what is interactive). */
+.primary,
+.outline {
+  display: inline-block;
+  border-radius: 4px;
+}
+.primary {
+  padding: 8px 16px;
+  border: 0;
+  background: var(--accent);
+  color: #1a0f05;
+  font-weight: 500;
+  cursor: pointer;
+}
+.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.outline {
+  padding: 7px 14px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  cursor: pointer;
+}
+.outline:hover {
+  border-color: var(--accent);
+}
+.text-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.text-button.quiet {
+  color: var(--muted);
+}
+.text-button.danger {
+  color: var(--danger);
+}
+.text-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+input:not([type="radio"], [type="checkbox"]),
+select,
+textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+}
+/* A field in use shows it by its border; a ring is only for keyboard focus. */
+input:not([type="radio"], [type="checkbox"]):focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+input:is([type="radio"], [type="checkbox"]):focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Something live: a Run in progress. */
+.pulse {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+/* Choices keep their native shape; the ring hugs the control, a circle for a radio. */
+input:is([type="radio"], [type="checkbox"]) {
+  margin: 0;
+  accent-color: var(--accent);
+}
+input[type="radio"] {
+  border-radius: 50%;
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+label > :is(input, select, textarea) {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.error {
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .screen-header,
+  .screen-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}

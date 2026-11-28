@@ -1,0 +1,15 @@
+[package]
+name = "control-plane-tool-gateway"
+description = "Tool Gateway: allow or deny every tool call of an agent."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+control-plane-common.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

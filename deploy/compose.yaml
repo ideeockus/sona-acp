@@ -1,0 +1,24 @@
+# File Storage's backend (D40, D106): RustFS, S3-compatible, reachable from this host
+# only. The control plane is the one client; agents never talk to it.
+#
+# The keys come from the environment, the same two the control plane reads:
+#
+#   SONA_S3_ACCESS_KEY=… SONA_S3_SECRET_KEY=… docker compose -f deploy/compose.yaml up -d
+#
+# Without them RustFS would start with its built-in default keys, so compose refuses.
+
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.5@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+    environment:
+      RUSTFS_ACCESS_KEY: ${SONA_S3_ACCESS_KEY:?set SONA_S3_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${SONA_S3_SECRET_KEY:?set SONA_S3_SECRET_KEY}
+      RUSTFS_VOLUMES: /data
+    volumes:
+      - rustfs-data:/data
+
+volumes:
+  rustfs-data:
