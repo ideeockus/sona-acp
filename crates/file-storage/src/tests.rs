@@ -350,7 +350,7 @@ async fn a_tasks_files_are_shared_by_whoever_is_on_it() {
     );
     assert_eq!(
         s.files.list(&agent("manager"), Some(task)).await.unwrap(),
-        [result.clone()]
+        std::slice::from_ref(&result)
     );
     // Someone off the task neither reads it nor lists the task, nor uploads into it.
     let tester = agent("tester");
