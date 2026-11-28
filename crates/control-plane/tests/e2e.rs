@@ -281,6 +281,75 @@ async fn a_stopped_chain_wakes_nobody_until_resumed() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Docker and the sona-plane-agent:dev image"]
+async fn a_browser_session_works_until_logout() {
+    let (root, control_plane) = start("e2e-session", Arc::new(Model::default())).await;
+    let operator = &control_plane.operator;
+    let http = reqwest::Client::new();
+    let url = |path: &str| format!("{}{path}", operator.url);
+
+    let login = http
+        .post(url("/v1/session"))
+        .json(&json!({ "credential": operator.token }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 201);
+    let set_cookie = login.headers()["set-cookie"].to_str().unwrap();
+    let cookie = set_cookie.split(';').next().unwrap().to_owned();
+    let session = |method: reqwest::Method, path: &str| {
+        http.request(method, url(path))
+            .header("cookie", cookie.clone())
+    };
+
+    let me: Value = session(reqwest::Method::GET, "/v1/session")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["alias"], "user");
+
+    // A change counts only when the page asking is ours; reqwest sends Host as the URL has it.
+    let card = json!({
+        "alias": "coder", "title": "Writes code",
+        "model": { "provider": "fake", "id": "fake-1" },
+        "access": [], "allow_message_to": [], "prompt": "",
+    });
+    let forged = session(reqwest::Method::POST, "/v1/agents")
+        .header("origin", "https://evil.example")
+        .json(&card)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forged.status(), 403);
+    let ours = session(reqwest::Method::POST, "/v1/agents")
+        .header("origin", operator.url.clone())
+        .json(&card)
+        .send()
+        .await
+        .unwrap();
+    assert!(ours.status().is_success(), "{}", ours.status());
+    let agents = operator.call("GET", "/v1/agents", None).await;
+    assert_eq!(agents[0]["alias"], "coder");
+
+    let logout = session(reqwest::Method::DELETE, "/v1/session")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), 204);
+    let after = session(reqwest::Method::GET, "/v1/session")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after.status(), 401);
+
+    drop(control_plane);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 /// A fresh control plane in its own directory, with the stub model.
 async fn start(name: &str, model: Arc<Model>) -> (PathBuf, ControlPlane) {
     let site = Site::from_env();
