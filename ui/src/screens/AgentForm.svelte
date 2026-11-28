@@ -5,7 +5,7 @@
   import { modelLabel } from "../lib/format";
   import { navigate } from "../lib/router.svelte";
   import { session } from "../lib/session.svelte";
-  import type { Access, Agent, AgentCard, ModelInfo } from "../lib/types";
+  import type { Access, Agent, AgentCard, ModelInfo, Skill } from "../lib/types";
 
   let { alias = null }: { alias?: string | null } = $props();
   const editing = $derived(alias !== null);
@@ -18,6 +18,7 @@
     allow_message_to: [],
     prompt: "",
     hue: 28,
+    skills: [],
   });
   let version = $state(0);
   let others = $state<string[]>([]);
@@ -58,6 +59,11 @@
   function pickProvider(provider: string) {
     card.model = { provider, id: "" };
   }
+
+  let library = $state<Skill[]>([]);
+  $effect(() => {
+    void api.get<Skill[]>("/skills").then((list) => (library = list));
+  });
 
   const recipients = $derived([...others, ...(session.alias ? [session.alias] : [])]);
 
@@ -181,6 +187,22 @@
         {:else}
           <p class="hint">No other agents yet.</p>
         {/each}
+      </div>
+      <div class="panel-head sub"><h2>Skills</h2><a class="mono small muted" href="/skills">library</a></div>
+      <div class="panel-body checks">
+        {#each library as s (s.name)}
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={card.skills.includes(s.name)}
+              onchange={(e) => (card.skills = toggle(card.skills, s.name, e.currentTarget.checked))}
+            />
+            <span><b class="mono">{s.name}</b>{#if !s.enabled} <span class="mono small muted">disabled in the library</span>{/if}<br /><span class="hint">{s.description}</span></span>
+          </label>
+        {:else}
+          <p class="hint">The library is empty.</p>
+        {/each}
+        {#if library.length}<p class="hint">A skill lets the agent read its files, even without Read files; its scripts run only with Shell.</p>{/if}
       </div>
     </section>
 

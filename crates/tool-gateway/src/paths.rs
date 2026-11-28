@@ -8,7 +8,7 @@ use std::path::{Component, Path};
 fn roots(tool: &str) -> Option<&'static [&'static str]> {
     match tool {
         // File Storage moves files between the workdir and storage, nowhere else (D106).
-        "write" | "edit" | "file_upload" | "file_download" => Some(&[WORKDIR]),
+        "write" | "edit" | "file_upload" | "file_download" | "skill_propose" => Some(&[WORKDIR]),
         "read" | "grep" | "find" | "ls" => Some(&[WORKDIR, SKILLS_DIR]),
         _ => None,
     }

@@ -23,6 +23,7 @@ control-plane-common = { path = "crates/common" }
 control-plane-file-storage = { path = "crates/file-storage" }
 control-plane-message-broker = { path = "crates/message-broker" }
 control-plane-scheduler = { path = "crates/scheduler" }
+control-plane-skills = { path = "crates/skills" }
 control-plane-task-manager = { path = "crates/task-manager" }
 control-plane-tool-gateway = { path = "crates/tool-gateway" }
 flate2 = "1"

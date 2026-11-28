@@ -110,6 +110,18 @@ target/release/sapctl memory list coder --search отчёт
 target/release/sapctl memory delete coder <id>
 ```
 
+### Skills
+
+Библиотеку skills ведёт оператор (D109). Skill приходит из git-репозитория с фиксацией коммита или его предлагает агент (`skill_propose`); в обоих случаях — выключенным, до ревью. Нужен `git` на хосте.
+
+```text
+target/release/sapctl skills add https://github.com/anthropics/skills --path skills/pdf
+target/release/sapctl skills show pdf
+target/release/sapctl skills enable pdf
+```
+
+Дальше skill отмечается в карточке агента. Агент видит только выданные и включённые skills; выданный skill он может читать даже без Read files, а его скрипты запускает только с Shell.
+
 ## На VPS
 
 1. Сеть для агентов, один раз (D88):

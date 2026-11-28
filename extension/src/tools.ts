@@ -2,8 +2,8 @@
 // decide what the agent may do, and Gateway checks the grant first (D22).
 
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, extname } from "node:path";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { Type } from "typebox";
 import { call, download, session, upload } from "./api.ts";
 
@@ -222,7 +222,35 @@ const memoryDelete = defineTool({
   },
 });
 
+/** Every file under `dir`, as paths relative to it. Symlinks are left out. */
+async function filesUnder(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true, recursive: true });
+  return entries
+    .filter((e) => e.isFile())
+    .map((e) => relative(dir, join(e.parentPath, e.name)))
+    .filter((p) => !p.split("/").includes(".git"));
+}
+
+// The directory was resolved and checked by Gateway before the call (index.ts).
+const skillPropose = defineTool({
+  name: "skill_propose",
+  label: "Propose skill",
+  description:
+    "Propose a skill you wrote: a directory in your workdir with SKILL.md (frontmatter name and description) and any scripts or references. It goes to the operator's library disabled; you can use it once the operator enables it and grants it to you.",
+  parameters: Type.Object({
+    path: Type.String({ description: "The skill's directory in your workdir" }),
+  }),
+  async execute(_id, p) {
+    const files = [];
+    for (const path of await filesUnder(p.path)) {
+      files.push({ path, content: await readFile(join(p.path, path), "utf8") });
+    }
+    return reply(await call("POST", "/v1/skills/proposals", { files }));
+  },
+});
+
 export const tools = [
+  skillPropose,
   sendMessage,
   readMessages,
   taskCreate,

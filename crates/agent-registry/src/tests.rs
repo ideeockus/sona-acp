@@ -39,6 +39,7 @@ fn card(name: &str) -> AgentCard {
         allow_message_to: vec![alias("manager")],
         prompt: "You write code.".to_owned(),
         hue: None,
+        skills: Vec::new(),
     }
 }
 

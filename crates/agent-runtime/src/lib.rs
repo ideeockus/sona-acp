@@ -13,4 +13,4 @@ mod runtime;
 mod store;
 mod transcript;
 
-pub use runtime::{Limits, Runtime, RuntimeConfig};
+pub use runtime::{Collaborators, Limits, Runtime, RuntimeConfig};

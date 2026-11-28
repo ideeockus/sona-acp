@@ -30,6 +30,10 @@ pub struct AgentCard {
     /// when not given, so it comes back always set.
     #[serde(default)]
     pub hue: Option<u16>,
+    /// Skills from the library (D109). A skill grants reading its own files, like a
+    /// tool; one the library has disabled is not mounted.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 /// An agent as Registry keeps it: its card, the card's version (D95) and whether it
@@ -106,6 +110,8 @@ pub const ALWAYS_GRANTED: &[&str] = &[
     "memory_list",
     "memory_search",
     "memory_delete",
+    // A skill an agent wrote goes to the library, disabled (D109).
+    "skill_propose",
 ];
 
 impl AgentCard {
@@ -122,6 +128,11 @@ impl AgentCard {
             if !tools.contains(tool) {
                 tools.push(tool);
             }
+        }
+        // Pi lists skills only to a model that can read; Gateway keeps such a read
+        // inside the skills (D109).
+        if !self.skills.is_empty() && !tools.contains(&"read") {
+            tools.push("read");
         }
         tools
     }
@@ -261,6 +272,7 @@ mod tests {
             allow_message_to: Vec::new(),
             prompt: String::new(),
             hue: None,
+            skills: Vec::new(),
         };
         assert_eq!(
             card.tools(),
@@ -270,6 +282,7 @@ mod tests {
                 "memory_list",
                 "memory_search",
                 "memory_delete",
+                "skill_propose",
                 "read",
                 "ls",
                 "grep",

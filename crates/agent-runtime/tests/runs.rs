@@ -2,13 +2,14 @@
 
 use async_trait::async_trait;
 use control_plane_agent_runtime::launcher::{Launched, Launcher, Process, RunSpec};
-use control_plane_agent_runtime::{Limits, Runtime, RuntimeConfig};
+use control_plane_agent_runtime::{Collaborators, Limits, Runtime, RuntimeConfig};
 use control_plane_common::broker::{InboxBatch, InboxDelivery, Message, Notifications};
 use control_plane_common::journal::{Event, JournalWriter, Outcome};
 use control_plane_common::registry::{
     Access, Agent, AgentCard, AgentDirectory, AgentState, Credentials, ModelRef, Secret, Session,
 };
 use control_plane_common::runtime::{RunControl, RunFilter, RunOutcome, Usage};
+use control_plane_common::skills::SkillMounts;
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, RunId, SessionKey, TaskId, Timestamp,
 };
@@ -47,6 +48,12 @@ impl AgentDirectory for Directory {
             allow_message_to,
             prompt: format!("You are {alias}."),
             hue: None,
+            // The library has only the first enabled.
+            skills: if alias.as_str() == "manager" {
+                vec!["csv-export".to_owned(), "disabled-one".to_owned()]
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -62,6 +69,20 @@ impl AgentDirectory for Directory {
                 AgentState::Active
             },
         })
+    }
+}
+
+/// A library with one enabled skill, `csv-export`.
+struct Skills;
+
+#[async_trait]
+impl SkillMounts for Skills {
+    async fn enabled(&self, names: &[String]) -> Result<Vec<(String, PathBuf)>> {
+        Ok(names
+            .iter()
+            .filter(|n| n.as_str() == "csv-export")
+            .map(|n| (n.clone(), PathBuf::from("/library/csv-export/v1")))
+            .collect())
     }
 }
 
@@ -495,11 +516,14 @@ async fn setup_with(pool: SqlitePool, scripts: Vec<Script>, limits: Limits) -> S
     let runtime = Runtime::new(
         config,
         pool,
-        Arc::new(Directory(inbox.disabled.clone())),
-        tokens.clone(),
-        inbox.clone(),
-        journal.clone(),
-        pi.clone(),
+        Collaborators {
+            directory: Arc::new(Directory(inbox.disabled.clone())),
+            credentials: tokens.clone(),
+            inbox: inbox.clone(),
+            journal: journal.clone(),
+            launcher: pi.clone(),
+            skills: Arc::new(Skills),
+        },
     )
     .await
     .unwrap();
@@ -582,7 +606,7 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
     assert_eq!(arg_after(&spec, "--model"), "fake/fake-1");
     assert_eq!(
         arg_after(&spec, "--tools"),
-        "read_messages,memory_add,memory_list,memory_search,memory_delete,read,ls,grep,find,send_message"
+        "read_messages,memory_add,memory_list,memory_search,memory_delete,skill_propose,read,ls,grep,find,send_message"
     );
     assert_eq!(arg_after(&spec, "-e"), "/agent/extension");
     assert_eq!(arg_after(&spec, "--session-dir"), "/agent/sessions");
@@ -933,11 +957,14 @@ async fn relative_paths_are_refused() {
     let result = Runtime::new(
         config,
         memory_pool().await,
-        Arc::new(Directory(Arc::default())),
-        Arc::new(Tokens::default()),
-        Arc::new(Inbox::default()),
-        Arc::new(Journal::default()),
-        Arc::new(FakePi::default()),
+        Collaborators {
+            directory: Arc::new(Directory(Arc::default())),
+            credentials: Arc::new(Tokens::default()),
+            inbox: Arc::new(Inbox::default()),
+            journal: Arc::new(Journal::default()),
+            launcher: Arc::new(FakePi::default()),
+            skills: Arc::new(Skills),
+        },
     )
     .await;
     assert!(matches!(result, Err(Error::InvalidInput(_))));
@@ -1208,4 +1235,22 @@ async fn models_come_from_pi_once_and_for_the_operator_only() {
         s.runtime.models(&agent).await,
         Err(Error::Forbidden(_))
     ));
+}
+
+#[tokio::test]
+async fn only_enabled_skills_of_the_card_are_mounted_read_only() {
+    let s = setup(vec![Script::Settle]).await;
+    s.runtime.start().await.unwrap();
+    deliver(&s, &message("manager", None, CorrelationId::new())).await;
+
+    let spec = s.pi.specs.lock().unwrap()[0].clone();
+    assert_eq!(arg_after(&spec, "--skill"), "/agent/skills/csv-export");
+    assert_eq!(spec.args.iter().filter(|a| *a == "--skill").count(), 1);
+    let mount = spec
+        .mounts
+        .iter()
+        .find(|m| m.inside == "/agent/skills/csv-export")
+        .unwrap();
+    assert_eq!(mount.host, PathBuf::from("/library/csv-export/v1"));
+    assert!(mount.read_only);
 }

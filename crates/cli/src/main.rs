@@ -11,6 +11,7 @@ use client::Client;
 use control_plane_common::broker::NewMessage;
 use control_plane_common::registry::{Agent, AgentCard};
 use control_plane_common::schedules::{NewSchedule, ScheduleUpdate};
+use control_plane_common::skills::GitSkill;
 use control_plane_common::status::Status;
 use control_plane_common::tasks::{NewTask, TaskResult, TaskStatus, TaskUpdate};
 use control_plane_common::{
@@ -94,6 +95,9 @@ enum Command {
     },
     /// The models Pi has a key for: what a card may name (D104).
     Models,
+    /// The skill library (D109).
+    #[command(subcommand)]
+    Skills(SkillsCommand),
     /// What agents remember (D108).
     #[command(subcommand)]
     Memory(MemoryCommand),
@@ -170,6 +174,39 @@ enum TasksCommand {
         links: Vec<String>,
         #[arg(long)]
         note: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillsCommand {
+    List,
+    /// A skill with its SKILL.md and files, for review.
+    Show {
+        name: String,
+    },
+    /// Fetches a skill from a git repository; it arrives disabled.
+    Add {
+        /// https:// only.
+        url: String,
+        /// A branch, tag or commit; the default branch when not given.
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+        /// The skill's directory in the repository.
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Fetches the skill's source again; new content disables it until reviewed.
+    Update {
+        name: String,
+    },
+    Enable {
+        name: String,
+    },
+    Disable {
+        name: String,
+    },
+    Delete {
+        name: String,
     },
 }
 
@@ -419,6 +456,36 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         ),
         Command::Transcript { run } => (Method::GET, format!("/v1/runs/{run}/transcript"), None),
         Command::Models => (Method::GET, "/v1/models".to_owned(), None),
+        Command::Skills(SkillsCommand::List) => (Method::GET, "/v1/skills".into(), None),
+        Command::Skills(SkillsCommand::Show { name }) => (
+            Method::GET,
+            format!("/v1/skills/{}", query_value(&name)),
+            None,
+        ),
+        Command::Skills(SkillsCommand::Add { url, git_ref, path }) => {
+            let source = GitSkill { url, git_ref, path };
+            (Method::POST, "/v1/skills".into(), Some(json(source)))
+        }
+        Command::Skills(SkillsCommand::Update { name }) => (
+            Method::POST,
+            format!("/v1/skills/{}/update", query_value(&name)),
+            None,
+        ),
+        Command::Skills(SkillsCommand::Enable { name }) => (
+            Method::POST,
+            format!("/v1/skills/{}/enable", query_value(&name)),
+            None,
+        ),
+        Command::Skills(SkillsCommand::Disable { name }) => (
+            Method::POST,
+            format!("/v1/skills/{}/disable", query_value(&name)),
+            None,
+        ),
+        Command::Skills(SkillsCommand::Delete { name }) => (
+            Method::DELETE,
+            format!("/v1/skills/{}", query_value(&name)),
+            None,
+        ),
         Command::Memory(MemoryCommand::List { agent, search }) => {
             let mut path = format!("/v1/agents/{}/memory", agent.as_str());
             if let Some(search) = search {

@@ -118,6 +118,7 @@ impl AgentDirectory for Directory {
             allow_message_to: Vec::new(),
             prompt: String::new(),
             hue: None,
+            skills: Vec::new(),
         })
     }
     async fn record(&self, alias: &Alias) -> Result<Agent> {

@@ -69,6 +69,7 @@ mod tests {
             allow_message_to: Vec::new(),
             prompt: String::new(),
             hue: None,
+            skills: Vec::new(),
         };
         Agent {
             card,

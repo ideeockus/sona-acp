@@ -18,6 +18,7 @@ pub mod memory;
 pub mod registry;
 pub mod runtime;
 pub mod schedules;
+pub mod skills;
 pub mod status;
 pub mod tasks;
 

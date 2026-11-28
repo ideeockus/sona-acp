@@ -6,7 +6,7 @@ use crate::rpc::{Command, CommandWriter, Event, EventReader};
 use crate::runtime::Inner;
 use control_plane_common::broker::{InboxBatch, Message};
 use control_plane_common::journal::{Component, Event as JournalEvent, Outcome};
-use control_plane_common::layout::{EXTENSION_DIR, PI_DIR, SESSIONS_DIR, WORKDIR};
+use control_plane_common::layout::{EXTENSION_DIR, PI_DIR, SESSIONS_DIR, SKILLS_DIR, WORKDIR};
 use control_plane_common::registry::{AgentCard, AgentState, Secret};
 use control_plane_common::runtime::{ActiveRun, RunOutcome, RunRecord, Usage};
 use control_plane_common::{
@@ -257,7 +257,7 @@ impl Inner {
             inside: inside.to_owned(),
             read_only,
         };
-        let spec = RunSpec {
+        let mut spec = RunSpec {
             name: format!("sona-run-{}", run.run_id),
             args: self.pi_args(run, context),
             env: self.pi_env(run, token),
@@ -268,6 +268,12 @@ impl Inner {
                 mount(&self.config.extension, EXTENSION_DIR, true),
             ],
         };
+        // Only the card's skills the library has enabled, each on its own (D109).
+        for (name, dir) in self.skills.enabled(&run.card.skills).await? {
+            let inside = format!("{SKILLS_DIR}/{name}");
+            spec.args.extend(["--skill".to_owned(), inside.clone()]);
+            spec.mounts.push(mount(&dir, &inside, true));
+        }
 
         let launched = self.launcher.start(spec).await?;
         let mut commands = CommandWriter::new(launched.stdin);

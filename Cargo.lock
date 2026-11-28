@@ -338,6 +338,7 @@ dependencies = [
  "control-plane-file-storage",
  "control-plane-message-broker",
  "control-plane-scheduler",
+ "control-plane-skills",
  "control-plane-task-manager",
  "control-plane-tool-gateway",
  "reqwest 0.13.5",
@@ -470,6 +471,19 @@ dependencies = [
  "jiff",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "control-plane-skills"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "control-plane-common",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

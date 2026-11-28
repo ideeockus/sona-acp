@@ -28,6 +28,7 @@ use control_plane_common::registry::{
 };
 use control_plane_common::runtime::{ModelInfo, RunControl, RunFilter, RunRecord, TranscriptEntry};
 use control_plane_common::schedules::{NewSchedule, Schedule, ScheduleUpdate, Schedules};
+use control_plane_common::skills::{GitSkill, ProposedFile, Skill, SkillDetail, SkillLibrary};
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{
@@ -51,6 +52,7 @@ pub struct Services {
     pub files: Arc<dyn FileStorage>,
     pub schedules: Arc<dyn Schedules>,
     pub memory: Arc<dyn AgentMemory>,
+    pub skills: Arc<dyn SkillLibrary>,
 }
 
 type Shared = State<Arc<Services>>;
@@ -107,6 +109,15 @@ pub fn router(services: Services) -> Router {
             "/v1/agents/{alias}/memory/{id}",
             axum::routing::delete(forget),
         )
+        .route("/v1/skills", post(add_skill).get(list_skills))
+        .route(
+            "/v1/skills/proposals",
+            post(propose_skill).layer(DefaultBodyLimit::max(6 * 1024 * 1024)),
+        )
+        .route("/v1/skills/{name}", get(get_skill).delete(delete_skill))
+        .route("/v1/skills/{name}/enable", post(enable_skill))
+        .route("/v1/skills/{name}/disable", post(disable_skill))
+        .route("/v1/skills/{name}/update", post(update_skill))
         .route("/v1/schedules", post(create_schedule).get(list_schedules))
         .route(
             "/v1/schedules/{id}",
@@ -334,6 +345,7 @@ async fn create_agent(
     Body(card): Body<AgentCard>,
 ) -> Result<StatusCode, ApiError> {
     check_model(&s, &caller, &card.model).await?;
+    check_skills(&s, &caller, &card.skills).await?;
     s.registry.create_agent(&caller, card).await?;
     Ok(StatusCode::CREATED)
 }
@@ -363,6 +375,7 @@ async fn update_agent(
         return Err(Error::InvalidInput("an agent's alias never changes".to_owned()).into());
     }
     check_model(&s, &caller, &edit.card.model).await?;
+    check_skills(&s, &caller, &edit.card.skills).await?;
     Ok(Json(s.registry.update_agent(&caller, edit).await?))
 }
 
@@ -589,6 +602,92 @@ async fn delete_schedule(
     let id: ScheduleId = parse(&id)?;
     s.schedules.delete_schedule(&caller, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A card names only skills the library has; a disabled one is fine, it is just not
+/// mounted (D109).
+async fn check_skills(s: &Services, caller: &Caller, names: &[String]) -> Result<(), Error> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let library = s.skills.list_skills(caller).await?;
+    match names
+        .iter()
+        .find(|n| !library.iter().any(|skill| &skill.name == *n))
+    {
+        Some(missing) => Err(Error::InvalidInput(format!(
+            "the library has no skill {missing}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+async fn list_skills(State(s): Shared, Authenticated(caller): Authenticated) -> Reply<Vec<Skill>> {
+    Ok(Json(s.skills.list_skills(&caller).await?))
+}
+
+async fn add_skill(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Body(source): Body<GitSkill>,
+) -> Result<(StatusCode, Json<Skill>), ApiError> {
+    let skill = s.skills.add_from_git(&caller, source).await?;
+    Ok((StatusCode::CREATED, Json(skill)))
+}
+
+async fn get_skill(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(name): Path<String>,
+) -> Reply<SkillDetail> {
+    Ok(Json(s.skills.get_skill(&caller, &name).await?))
+}
+
+async fn delete_skill(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    s.skills.delete_skill(&caller, &name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn enable_skill(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(name): Path<String>,
+) -> Reply<Skill> {
+    Ok(Json(s.skills.set_enabled(&caller, &name, true).await?))
+}
+
+async fn disable_skill(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(name): Path<String>,
+) -> Reply<Skill> {
+    Ok(Json(s.skills.set_enabled(&caller, &name, false).await?))
+}
+
+async fn update_skill(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(name): Path<String>,
+) -> Reply<Skill> {
+    Ok(Json(s.skills.update_skill(&caller, &name).await?))
+}
+
+#[derive(Deserialize)]
+struct Proposal {
+    files: Vec<ProposedFile>,
+}
+
+async fn propose_skill(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Body(proposal): Body<Proposal>,
+) -> Result<(StatusCode, Json<Skill>), ApiError> {
+    let skill = s.skills.propose(&caller, proposal.files).await?;
+    Ok((StatusCode::CREATED, Json(skill)))
 }
 
 async fn list_models(

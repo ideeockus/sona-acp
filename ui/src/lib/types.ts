@@ -36,6 +36,8 @@ export interface AgentCard {
   allow_message_to: Alias[];
   prompt: string;
   hue: number | null;
+  /** From the library; a disabled one is not mounted (D109). */
+  skills: string[];
 }
 
 export interface Agent extends AgentCard {
@@ -173,6 +175,29 @@ export interface MemoryRecord {
   run_id: string | null;
   correlation_id: string | null;
   created_at: Time;
+}
+
+/** A skill in the library (D109). */
+export interface Skill {
+  name: string;
+  description: string;
+  source: { kind: "git"; url: string; git_ref: string; path: string; commit: string } | { kind: "proposed"; by: Alias };
+  version: string;
+  enabled: boolean;
+  added_by: Alias;
+  added_at: Time;
+  updated_at: Time;
+}
+
+export interface SkillDetail extends Skill {
+  instructions: string;
+  files: { path: string; size: number }[];
+}
+
+export interface GitSkill {
+  url: string;
+  git_ref: string | null;
+  path: string | null;
 }
 
 export interface Conversation {

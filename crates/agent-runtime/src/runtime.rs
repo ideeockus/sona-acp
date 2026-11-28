@@ -11,6 +11,7 @@ use control_plane_common::registry::{AgentDirectory, Credentials};
 use control_plane_common::runtime::{
     ActiveRun, ModelInfo, RunControl, RunFilter, RunRecord, TranscriptEntry,
 };
+use control_plane_common::skills::SkillMounts;
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, Result, RunId, SessionKey, Timestamp,
 };
@@ -75,6 +76,7 @@ pub(crate) struct Inner {
     pub(crate) inbox: Arc<dyn InboxDelivery>,
     pub(crate) journal: Arc<dyn JournalWriter>,
     pub(crate) launcher: Arc<dyn Launcher>,
+    pub(crate) skills: Arc<dyn SkillMounts>,
     pub(crate) runs: RunStore,
     /// Agents being served, each with the signal that new mail arrived.
     serving: Mutex<HashMap<Alias, Arc<Notify>>>,
@@ -84,17 +86,27 @@ pub(crate) struct Inner {
     models: tokio::sync::Mutex<Option<Vec<ModelInfo>>>,
 }
 
+/// What Runtime works with: the components it calls and where Pi runs.
+pub struct Collaborators {
+    pub directory: Arc<dyn AgentDirectory>,
+    pub credentials: Arc<dyn Credentials>,
+    pub inbox: Arc<dyn InboxDelivery>,
+    pub journal: Arc<dyn JournalWriter>,
+    pub launcher: Arc<dyn Launcher>,
+    pub skills: Arc<dyn SkillMounts>,
+}
+
 impl Runtime {
     /// `pool` is Runtime's own database, for the Runs it keeps (D97).
-    pub async fn new(
-        config: RuntimeConfig,
-        pool: SqlitePool,
-        directory: Arc<dyn AgentDirectory>,
-        credentials: Arc<dyn Credentials>,
-        inbox: Arc<dyn InboxDelivery>,
-        journal: Arc<dyn JournalWriter>,
-        launcher: Arc<dyn Launcher>,
-    ) -> Result<Self> {
+    pub async fn new(config: RuntimeConfig, pool: SqlitePool, with: Collaborators) -> Result<Self> {
+        let Collaborators {
+            directory,
+            credentials,
+            inbox,
+            journal,
+            launcher,
+            skills,
+        } = with;
         // Pi runs in the agent's workdir, so a relative path would point elsewhere.
         for path in [&config.data_dir, &config.extension] {
             if !path.is_absolute() {
@@ -114,6 +126,7 @@ impl Runtime {
                 inbox,
                 journal,
                 launcher,
+                skills,
                 serving: Mutex::new(HashMap::new()),
                 active: Mutex::new(HashMap::new()),
                 models: tokio::sync::Mutex::new(None),

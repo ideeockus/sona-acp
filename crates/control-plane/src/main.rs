@@ -10,7 +10,7 @@ use control_plane_agent_journal::{Clock, FileJournal};
 use control_plane_agent_memory::SqliteMemory;
 use control_plane_agent_registry::SqliteRegistry;
 use control_plane_agent_runtime::launcher::{ContainerUser, DockerLauncher};
-use control_plane_agent_runtime::{Runtime, RuntimeConfig};
+use control_plane_agent_runtime::{Collaborators, Runtime, RuntimeConfig};
 use control_plane_api::{Services, router};
 use control_plane_common::Timestamp;
 use control_plane_common::files::FileStorage;
@@ -18,6 +18,7 @@ use control_plane_common::registry::Credentials;
 use control_plane_file_storage::{NoFileStorage, S3Config, S3Store, SqliteFileStorage};
 use control_plane_message_broker::SqliteBroker;
 use control_plane_scheduler::SqliteScheduler;
+use control_plane_skills::SqliteSkills;
 use control_plane_task_manager::SqliteTaskManager;
 use control_plane_tool_gateway::Gateway;
 use sqlx::SqlitePool;
@@ -142,6 +143,13 @@ async fn serve(config: Config) -> Result<(), Failure> {
         .await?,
     );
     let gateway = Arc::new(Gateway::new(registry.clone(), journal.clone()));
+    let skills = Arc::new(
+        SqliteSkills::new(
+            database(&config.data_dir, "skills").await?,
+            config.data_dir.join("skills"),
+        )
+        .await?,
+    );
     let memory = Arc::new(
         SqliteMemory::new(
             database(&config.data_dir, "memory").await?,
@@ -163,15 +171,18 @@ async fn serve(config: Config) -> Result<(), Failure> {
                 limits: config.limits.to_runtime(),
             },
             database(&config.data_dir, "runtime").await?,
-            registry.clone(),
-            registry.clone(),
-            broker.clone(),
-            journal.clone(),
-            Arc::new(DockerLauncher::new(
-                config.agent_image,
-                config.agent_network,
-                ContainerUser::owner_of(&config.data_dir)?,
-            )),
+            Collaborators {
+                directory: registry.clone(),
+                credentials: registry.clone(),
+                inbox: broker.clone(),
+                journal: journal.clone(),
+                launcher: Arc::new(DockerLauncher::new(
+                    config.agent_image,
+                    config.agent_network,
+                    ContainerUser::owner_of(&config.data_dir)?,
+                )),
+                skills: skills.clone(),
+            },
         )
         .await?,
     );
@@ -202,6 +213,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
         files,
         schedules,
         memory,
+        skills,
     });
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(address = %listener.local_addr()?, "listening");

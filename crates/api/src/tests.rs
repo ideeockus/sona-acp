@@ -9,6 +9,9 @@ use control_plane_common::runtime::{
     ActiveRun, ModelInfo, Price, RunFilter, RunRecord, TranscriptEntry,
 };
 use control_plane_common::schedules::{NewSchedule, Schedule, ScheduleUpdate, Schedules};
+use control_plane_common::skills::{
+    GitSkill, ProposedFile, Skill, SkillDetail, SkillLibrary, SkillSource,
+};
 use control_plane_common::{Caller, MessageId, Result, Timestamp};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -482,6 +485,46 @@ impl AgentMemory for Forgetful {
     }
 }
 
+/// A library with one skill, `csv-export`.
+struct Library;
+
+#[async_trait]
+impl SkillLibrary for Library {
+    async fn list_skills(&self, caller: &Caller) -> Result<Vec<Skill>> {
+        operator_only(caller)?;
+        Ok(vec![Skill {
+            name: "csv-export".to_owned(),
+            description: "CSV".to_owned(),
+            source: SkillSource::Proposed {
+                by: "coder".parse().unwrap(),
+            },
+            version: "v1".to_owned(),
+            enabled: false,
+            added_by: "coder".parse().unwrap(),
+            added_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
+        }])
+    }
+    async fn get_skill(&self, _: &Caller, name: &str) -> Result<SkillDetail> {
+        Err(Error::NotFound(format!("skill {name}")))
+    }
+    async fn add_from_git(&self, _: &Caller, _: GitSkill) -> Result<Skill> {
+        unimplemented!()
+    }
+    async fn update_skill(&self, _: &Caller, _: &str) -> Result<Skill> {
+        unimplemented!()
+    }
+    async fn set_enabled(&self, _: &Caller, _: &str, _: bool) -> Result<Skill> {
+        unimplemented!()
+    }
+    async fn delete_skill(&self, _: &Caller, _: &str) -> Result<()> {
+        unimplemented!()
+    }
+    async fn propose(&self, _: &Caller, _: Vec<ProposedFile>) -> Result<Skill> {
+        unimplemented!()
+    }
+}
+
 fn setup() -> Setup {
     let broker = Arc::new(Broker {
         callers: Mutex::default(),
@@ -505,6 +548,7 @@ fn setup() -> Setup {
         files: Arc::new(Files),
         schedules: Arc::new(NoSchedules),
         memory: Arc::new(Forgetful),
+        skills: Arc::new(Library),
     });
     Setup {
         app,
@@ -1235,4 +1279,32 @@ async fn an_agents_memory_is_its_own_by_token_and_any_for_the_operator() {
     let uri = format!("/v1/agents/manager/memory/{}", MemoryId::new());
     let (_, body) = call(&s.app, Method::DELETE, &uri, Some(OPERATOR), None).await;
     assert_eq!(body["detail"], "delete @manager");
+}
+
+#[tokio::test]
+async fn a_card_names_only_skills_the_library_has() {
+    let s = setup();
+    let card = |skills: Value| {
+        json!({"alias": "coder", "title": "", "model": {"provider": "p", "id": "m"},
+               "access": [], "allow_message_to": [], "prompt": "", "skills": skills})
+    };
+    let (status, _) = call(
+        &s.app,
+        Method::POST,
+        "/v1/agents",
+        Some(OPERATOR),
+        Some(card(json!(["csv-export"]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = call(
+        &s.app,
+        Method::POST,
+        "/v1/agents",
+        Some(OPERATOR),
+        Some(card(json!(["ghost"]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["detail"].as_str().unwrap().contains("ghost"));
 }

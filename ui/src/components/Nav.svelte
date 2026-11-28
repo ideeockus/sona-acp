@@ -10,6 +10,7 @@
     { href: "/triggers", label: "Triggers", top: true },
     { href: "/agents", label: "Agents", top: true },
     { href: "/agents", label: "Registry" },
+    { href: "/skills", label: "Skills" },
     { href: "/messages", label: "Messages" },
     { href: "/journal", label: "Journal" },
     { href: "/tasks", label: "Tasks", top: true },

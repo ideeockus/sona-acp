@@ -14,6 +14,7 @@
   import RunPage from "./screens/RunPage.svelte";
   import Settings from "./screens/Settings.svelte";
   import TaskPage from "./screens/TaskPage.svelte";
+  import Skills from "./screens/Skills.svelte";
   import Triggers from "./screens/Triggers.svelte";
   import Tasks from "./screens/Tasks.svelte";
 
@@ -64,6 +65,10 @@
       {:else if match("/messages/:alias/:session")}
         {@const m = match("/messages/:alias/:session")!}
         {#key route.path}<Messages alias={m.alias} session={m.session} />{/key}
+      {:else if match("/skills")}
+        <Skills />
+      {:else if match("/skills/:name")}
+        {#key route.path}<Skills name={match("/skills/:name")!.name} />{/key}
       {:else if match("/triggers")}
         <Triggers />
       {:else if match("/journal")}

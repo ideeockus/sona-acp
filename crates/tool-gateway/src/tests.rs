@@ -1,5 +1,5 @@
 use super::*;
-use control_plane_common::registry::{Access, Agent, AgentCard, ModelRef};
+use control_plane_common::registry::{Access, Agent, AgentCard, AgentState, ModelRef};
 use control_plane_common::{Alias, CorrelationId, RunId};
 use std::sync::Mutex;
 
@@ -28,6 +28,7 @@ impl AgentDirectory for Directory {
             allow_message_to: Vec::new(),
             prompt: String::new(),
             hue: None,
+            skills: Vec::new(),
         })
     }
 
@@ -244,4 +245,61 @@ async fn files_move_between_the_workdir_and_storage_only() {
         assert!(is_deny(&verdict(tool, None).await), "{tool}");
     }
     assert_eq!(verdict("file_list", None).await, Verdict::Allow);
+}
+
+#[tokio::test]
+async fn a_skill_grants_reading_its_files_only() {
+    let directory = Arc::new(SkilledReader);
+    let gateway = Gateway::new(directory, Arc::new(Recorded::default()));
+    let check = |path: &'static str| {
+        let gateway = &gateway;
+        async move {
+            gateway
+                .check(&coder(), call("read", Some(path)))
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        check("/agent/skills/csv-export/SKILL.md").await,
+        Verdict::Allow
+    );
+    // No Read files: the workdir stays closed.
+    assert!(is_deny(&check("/work/notes.md").await));
+    assert!(is_deny(
+        &gateway
+            .check(&coder(), call("ls", Some("/agent/skills")))
+            .await
+            .unwrap()
+    ));
+}
+
+/// `coder` with a skill and no file access.
+struct SkilledReader;
+
+#[async_trait]
+impl AgentDirectory for SkilledReader {
+    async fn agent(&self, alias: &Alias) -> Result<AgentCard> {
+        Ok(AgentCard {
+            alias: alias.clone(),
+            title: String::new(),
+            model: ModelRef {
+                provider: "fake".to_owned(),
+                id: "fake".to_owned(),
+            },
+            access: vec![Access::SendMessages],
+            allow_message_to: Vec::new(),
+            prompt: String::new(),
+            hue: None,
+            skills: vec!["csv-export".to_owned()],
+        })
+    }
+
+    async fn record(&self, alias: &Alias) -> Result<Agent> {
+        Ok(Agent {
+            card: self.agent(alias).await?,
+            version: 1,
+            state: AgentState::Active,
+        })
+    }
 }
