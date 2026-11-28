@@ -5,6 +5,7 @@
   import { look } from "../lib/agent";
   import { api, ApiError } from "../lib/api";
   import { firstLine, since, sessionLabel, short } from "../lib/format";
+  import { markdown } from "../lib/markdown";
   import { poll } from "../lib/poll.svelte";
   import { session } from "../lib/session.svelte";
   import type { Agent, Conversation, Message, NewMessage, Status, Task } from "../lib/types";
@@ -194,7 +195,13 @@
               {#if unreadIds.has(m.id)}<span class="live">unread</span>{/if}
             </span>
             {#if m.subject}<b class="subject">{m.subject}</b>{/if}
-            <p class="body">{m.body}</p>
+            {#if mine}
+              <!-- Yours, exactly as you typed it. -->
+              <p class="body">{m.body}</p>
+            {:else}
+              <!-- The agent's Markdown; markdown() leaves raw HTML as text. -->
+              <div class="body md">{@html markdown(m.body)}</div>
+            {/if}
           </li>
         {:else}
           <li class="center muted">No messages with @{alias} yet.</li>
@@ -351,6 +358,62 @@
     max-width: 600px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+  .md {
+    white-space: normal;
+  }
+  .md :global(:is(p, ul, ol, pre, table, blockquote, h1, h2, h3, h4)) {
+    margin: 0 0 8px;
+  }
+  .md :global(:last-child) {
+    margin-bottom: 0;
+  }
+  .md :global(:is(h1, h2, h3, h4)) {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .md :global(:is(ul, ol)) {
+    padding-left: 20px;
+  }
+  .md :global(code) {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 0 3px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  .md :global(pre) {
+    padding: 8px 12px;
+    overflow-x: auto;
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  .md :global(pre code) {
+    padding: 0;
+    border: 0;
+  }
+  .md :global(table) {
+    border-collapse: collapse;
+    display: block;
+    overflow-x: auto;
+  }
+  .md :global(:is(th, td)) {
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    text-align: left;
+  }
+  .md :global(th) {
+    font-weight: 600;
+  }
+  .md :global(blockquote) {
+    padding-left: 10px;
+    border-left: 2px solid var(--line-strong);
+    color: var(--muted);
+  }
+  .md :global(a) {
+    color: var(--accent-text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
   .mine .body {
     padding: 8px 12px;
