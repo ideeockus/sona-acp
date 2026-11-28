@@ -54,6 +54,7 @@ mod tests {
             subject: None,
             task_id: None,
             in_reply_to: None,
+            attachments: Vec::new(),
             correlation_id: CorrelationId::new(),
             created_at: Timestamp::now(),
         }

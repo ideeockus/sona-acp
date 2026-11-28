@@ -1,6 +1,7 @@
 use super::*;
-use control_plane_common::RunId;
+use control_plane_common::files::FileInfo;
 use control_plane_common::registry::{Agent, AgentCard, AgentState, ModelRef, Secret, Session};
+use control_plane_common::{FileId, RunId};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Mutex;
 
@@ -68,6 +69,55 @@ impl Credentials for OneActiveToken {
     }
 }
 
+/// Shares any file but those listed as unreadable, and remembers with whom.
+#[derive(Default)]
+struct Files {
+    unreadable: Mutex<Vec<FileId>>,
+    shared: Mutex<Vec<(FileId, Alias)>>,
+}
+
+#[async_trait]
+impl FileStorage for Files {
+    async fn upload(&self, _: &Caller, _: &str, _: &str, _: Vec<u8>) -> Result<FileInfo> {
+        unimplemented!()
+    }
+    async fn info(&self, _: &Caller, _: FileId) -> Result<FileInfo> {
+        unimplemented!()
+    }
+    async fn download(&self, _: &Caller, _: FileId) -> Result<(FileInfo, Vec<u8>)> {
+        unimplemented!()
+    }
+    async fn list(&self, _: &Caller) -> Result<Vec<FileInfo>> {
+        unimplemented!()
+    }
+    async fn share(
+        &self,
+        caller: &Caller,
+        files: &[FileId],
+        with: &Alias,
+    ) -> Result<Vec<FileInfo>> {
+        if let Some(file) = files
+            .iter()
+            .find(|f| self.unreadable.lock().unwrap().contains(f))
+        {
+            return Err(Error::NotFound(format!("file {file}")));
+        }
+        let mut shared = Vec::new();
+        for &id in files {
+            self.shared.lock().unwrap().push((id, with.clone()));
+            shared.push(FileInfo {
+                id,
+                name: format!("{id}.txt"),
+                size: 3,
+                content_type: "text/plain".to_owned(),
+                owner: caller.alias().clone(),
+                created_at: Timestamp::now(),
+            });
+        }
+        Ok(shared)
+    }
+}
+
 /// Keeps every recorded event.
 #[derive(Default)]
 struct Recorded(Mutex<Vec<Event>>);
@@ -84,6 +134,7 @@ struct Setup {
     broker: SqliteBroker,
     directory: Arc<Directory>,
     journal: Arc<Recorded>,
+    files: Arc<Files>,
     subscription: Mutex<Notifications>,
 }
 
@@ -139,10 +190,12 @@ async fn setup_on(pool: SqlitePool) -> Setup {
         Mutex::default(),
     ));
     let journal = Arc::new(Recorded::default());
+    let files = Arc::new(Files::default());
     let broker = SqliteBroker::new(
         pool,
         directory.clone(),
         Arc::new(OneActiveToken),
+        files.clone(),
         journal.clone(),
     )
     .await
@@ -152,6 +205,7 @@ async fn setup_on(pool: SqlitePool) -> Setup {
         broker,
         directory,
         journal,
+        files,
         subscription,
     }
 }
@@ -177,6 +231,7 @@ fn to(name: &str, body: &str, task_id: Option<TaskId>) -> NewMessage {
         subject: None,
         task_id,
         in_reply_to: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -1033,4 +1088,53 @@ async fn what_was_read_before_threads_stays_read_in_each() {
         .unwrap();
     let unread: Vec<u32> = threads.iter().map(|t| t.unread).collect();
     assert_eq!(unread, [0, 0]);
+}
+
+#[tokio::test]
+async fn attachments_are_shared_with_the_recipient_and_kept_with_the_message() {
+    let s = setup().await;
+    let file = FileId::new();
+    let mut message = to("coder", "the calculator", None);
+    message.attachments = vec![file];
+    let sent = s.broker.send(&operator(), message).await.unwrap();
+    assert_eq!(sent.attachments.len(), 1);
+    assert_eq!(sent.attachments[0].id, file);
+    assert_eq!(*s.files.shared.lock().unwrap(), [(file, alias("coder"))]);
+
+    // The recipient reads them with the message.
+    let read = s
+        .broker
+        .read_messages(&agent("coder", sent.correlation_id), sent.session())
+        .await
+        .unwrap();
+    assert_eq!(read[0].attachments, sent.attachments);
+}
+
+#[tokio::test]
+async fn a_file_the_sender_cannot_read_stops_the_message() {
+    let s = setup().await;
+    let theirs = FileId::new();
+    s.files.unreadable.lock().unwrap().push(theirs);
+    let mut message = to("coder", "look", None);
+    message.attachments = vec![FileId::new(), theirs];
+    assert!(matches!(
+        s.broker.send(&operator(), message).await,
+        Err(Error::NotFound(_))
+    ));
+    // Nothing was shared and nothing was stored.
+    assert!(s.files.shared.lock().unwrap().is_empty());
+    assert!(
+        s.broker
+            .conversation(&operator(), &alias("coder"), None, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut many = to("coder", "lots", None);
+    many.attachments = (0..21).map(|_| FileId::new()).collect();
+    assert!(matches!(
+        s.broker.send(&operator(), many).await,
+        Err(Error::InvalidInput(_))
+    ));
 }

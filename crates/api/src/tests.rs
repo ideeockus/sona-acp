@@ -152,6 +152,7 @@ impl MessageBroker for Broker {
             subject: message.subject,
             task_id: message.task_id,
             in_reply_to: message.in_reply_to,
+            attachments: Vec::new(),
             correlation_id: self.chain,
             created_at: Timestamp::now(),
         })
@@ -357,6 +358,61 @@ struct Setup {
     journal: Arc<Journal>,
 }
 
+/// Two files: a page and a picture, both readable by everyone.
+struct Files;
+
+impl Files {
+    fn file(name: &str, content_type: &str) -> FileInfo {
+        FileInfo {
+            id: FileId::new(),
+            name: name.to_owned(),
+            size: 4,
+            content_type: content_type.to_owned(),
+            owner: "coder".parse().unwrap(),
+            created_at: Timestamp::now(),
+        }
+    }
+}
+
+#[async_trait]
+impl FileStorage for Files {
+    async fn upload(
+        &self,
+        caller: &Caller,
+        name: &str,
+        content_type: &str,
+        content: Vec<u8>,
+    ) -> Result<FileInfo> {
+        Ok(FileInfo {
+            size: content.len() as u64,
+            owner: caller.alias().clone(),
+            ..Self::file(name, content_type)
+        })
+    }
+    async fn info(&self, _: &Caller, _: FileId) -> Result<FileInfo> {
+        Ok(Self::file("отчёт 1.html", "text/html"))
+    }
+    async fn download(&self, _: &Caller, id: FileId) -> Result<(FileInfo, Vec<u8>)> {
+        // An id ending in an even digit is the picture: enough for a stand-in.
+        let picture = id.to_string().ends_with(['0', '2', '4', '6', '8']);
+        let file = if picture {
+            Self::file("cat.png", "image/png")
+        } else {
+            Self::file("отчёт 1.html", "text/html")
+        };
+        Ok((file, b"data".to_vec()))
+    }
+    async fn list(&self, _: &Caller) -> Result<Vec<FileInfo>> {
+        Ok(Vec::new())
+    }
+    async fn share(&self, _: &Caller, files: &[FileId], _: &Alias) -> Result<Vec<FileInfo>> {
+        Ok(files
+            .iter()
+            .map(|_| Self::file("a.txt", "text/plain"))
+            .collect())
+    }
+}
+
 fn setup() -> Setup {
     let broker = Arc::new(Broker {
         callers: Mutex::default(),
@@ -377,6 +433,7 @@ fn setup() -> Setup {
         tasks: Arc::new(BrokenTasks),
         gateway: Arc::new(DenyBash),
         journal: journal.clone(),
+        files: Arc::new(Files),
     });
     Setup {
         app,
@@ -980,4 +1037,67 @@ async fn a_card_needs_a_model_pi_has() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_file_goes_up_as_its_bytes() {
+    let s = setup();
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/files?name=calc.js")
+        .header("authorization", format!("Bearer {OPERATOR}"))
+        .header("content-type", "text/javascript")
+        .body(HttpBody::from("1+1;"))
+        .unwrap();
+    let response = s.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let file: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        (file["name"].as_str(), file["size"].as_u64()),
+        (Some("calc.js"), Some(4))
+    );
+}
+
+#[tokio::test]
+async fn a_downloaded_file_never_runs_as_our_page() {
+    let s = setup();
+    let get = |id: String| {
+        let request = Request::builder()
+            .uri(format!("/v1/files/{id}"))
+            .header("authorization", format!("Bearer {OPERATOR}"))
+            .body(HttpBody::empty())
+            .unwrap();
+        s.app.clone().oneshot(request)
+    };
+    let id_ending = |even: bool| loop {
+        let id = FileId::new().to_string();
+        if id.ends_with(['0', '2', '4', '6', '8']) == even {
+            break id;
+        }
+    };
+
+    let page = get(id_ending(false)).await.unwrap();
+    let headers = page.headers();
+    assert_eq!(headers["content-type"], "application/octet-stream");
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename*=UTF-8''%D0%BE%D1%82%D1%87%D1%91%D1%82%201.html"
+    );
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert!(
+        headers["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .starts_with("sandbox")
+    );
+
+    let picture = get(id_ending(true)).await.unwrap();
+    assert_eq!(picture.headers()["content-type"], "image/png");
+    assert!(
+        picture.headers()["content-disposition"]
+            .to_str()
+            .unwrap()
+            .starts_with("inline")
+    );
 }

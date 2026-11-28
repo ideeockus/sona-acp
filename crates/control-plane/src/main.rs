@@ -12,7 +12,9 @@ use control_plane_agent_runtime::launcher::{ContainerUser, DockerLauncher};
 use control_plane_agent_runtime::{Runtime, RuntimeConfig};
 use control_plane_api::{Services, router};
 use control_plane_common::Timestamp;
+use control_plane_common::files::FileStorage;
 use control_plane_common::registry::Credentials;
+use control_plane_file_storage::{NoFileStorage, S3Config, S3Store, SqliteFileStorage};
 use control_plane_message_broker::SqliteBroker;
 use control_plane_task_manager::SqliteTaskManager;
 use control_plane_tool_gateway::Gateway;
@@ -97,11 +99,33 @@ async fn serve(config: Config) -> Result<(), Failure> {
     );
     let registry =
         Arc::new(SqliteRegistry::new(database(&config.data_dir, "registry").await?).await?);
+    let files: Arc<dyn FileStorage> = match &config.storage {
+        Some(storage) => {
+            let objects = S3Store::connect(S3Config {
+                endpoint: storage.endpoint.clone(),
+                bucket: storage.bucket.clone(),
+                access_key: required_env("SONA_S3_ACCESS_KEY")?,
+                secret_key: required_env("SONA_S3_SECRET_KEY")?,
+            })
+            .await?;
+            Arc::new(
+                SqliteFileStorage::new(
+                    database(&config.data_dir, "files").await?,
+                    Arc::new(objects),
+                    registry.clone(),
+                    journal.clone(),
+                )
+                .await?,
+            )
+        }
+        None => Arc::new(NoFileStorage),
+    };
     let broker = Arc::new(
         SqliteBroker::new(
             database(&config.data_dir, "broker").await?,
             registry.clone(),
             registry.clone(),
+            files.clone(),
             journal.clone(),
         )
         .await?,
@@ -153,6 +177,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
         tasks,
         gateway,
         journal,
+        files,
     });
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(address = %listener.local_addr()?, "listening");
@@ -186,9 +211,10 @@ async fn database(data_dir: &Path, name: &str) -> Result<SqlitePool, sqlx::Error
 fn provider_env(names: &[String]) -> Result<Vec<(String, String)>, String> {
     names
         .iter()
-        .map(|name| match std::env::var(name) {
-            Ok(value) => Ok((name.clone(), value)),
-            Err(_) => Err(format!("{name} is not set")),
-        })
+        .map(|name| Ok((name.clone(), required_env(name)?)))
         .collect()
+}
+
+fn required_env(name: &str) -> Result<String, String> {
+    std::env::var(name).map_err(|_| format!("{name} is not set"))
 }

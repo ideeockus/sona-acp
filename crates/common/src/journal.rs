@@ -12,6 +12,7 @@ pub enum Component {
     Runtime,
     Broker,
     TaskManager,
+    FileStorage,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

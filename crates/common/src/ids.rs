@@ -57,6 +57,10 @@ id!(
     /// A chain of Runs causally linked by wake-ups.
     CorrelationId
 );
+id!(
+    /// A file in File Storage (D106).
+    FileId
+);
 
 #[cfg(test)]
 mod tests {

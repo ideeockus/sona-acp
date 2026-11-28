@@ -1,0 +1,17 @@
+[package]
+name = "control-plane-file-storage"
+description = "File Storage: who may read which file, the files themselves in S3."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+control-plane-common.workspace = true
+rust-s3.workspace = true
+sqlx.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

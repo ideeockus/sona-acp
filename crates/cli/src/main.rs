@@ -267,6 +267,7 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
                 subject,
                 task_id: task,
                 in_reply_to: reply_to,
+                attachments: Vec::new(),
             };
             (Method::POST, "/v1/messages".into(), Some(json(message)))
         }

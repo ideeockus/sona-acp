@@ -37,6 +37,23 @@ pub struct Config {
     pub journal_retention_days: u32,
     #[serde(default)]
     pub limits: Limits,
+    /// File Storage on an S3 store, RustFS (D106). Without it, files are off.
+    pub storage: Option<Storage>,
+}
+
+/// `[storage]`. The keys come from `SONA_S3_ACCESS_KEY` and `SONA_S3_SECRET_KEY`,
+/// the same variables `deploy/compose.yaml` gives RustFS.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Storage {
+    /// Where the store listens, e.g. `http://127.0.0.1:9000`.
+    pub endpoint: String,
+    #[serde(default = "default_bucket")]
+    pub bucket: String,
+}
+
+fn default_bucket() -> String {
+    "sona".to_owned()
 }
 
 /// Safeguards against a runaway chain (D100): `[limits]`, each key optional.

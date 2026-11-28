@@ -1,6 +1,9 @@
 //! The contract of Message Broker.
 
-use crate::{Alias, Caller, CorrelationId, MessageId, Result, SessionKey, TaskId, Timestamp};
+use crate::files::Attachment;
+use crate::{
+    Alias, Caller, CorrelationId, FileId, MessageId, Result, SessionKey, TaskId, Timestamp,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +19,9 @@ pub struct NewMessage {
     pub subject: Option<String>,
     pub task_id: Option<TaskId>,
     pub in_reply_to: Option<MessageId>,
+    /// Files the sender may read; the recipient may read them too once sent (D106).
+    #[serde(default)]
+    pub attachments: Vec<FileId>,
 }
 
 /// A stored message.
@@ -30,6 +36,8 @@ pub struct Message {
     pub in_reply_to: Option<MessageId>,
     pub correlation_id: CorrelationId,
     pub created_at: Timestamp,
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
 }
 
 impl Message {

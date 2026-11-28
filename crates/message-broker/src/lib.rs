@@ -5,6 +5,7 @@ use control_plane_common::broker::{
     Conversation, DeliveryControl, FailingSession, InboxBatch, InboxDelivery, InboxStatus, Message,
     MessageBroker, NewMessage, Notifications, StoppedChain, Thread,
 };
+use control_plane_common::files::{Attachment, FileStorage};
 use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
 use control_plane_common::registry::{AgentDirectory, AgentState, Credentials};
 use control_plane_common::{
@@ -26,8 +27,11 @@ const THREADS: i64 = 100;
 const BETWEEN: &str = "((sender = ?1 AND recipient = ?2) OR (sender = ?2 AND recipient = ?1))";
 
 /// Columns of a `Row`, for queries on `messages`.
-const MESSAGE_COLUMNS: &str =
-    "id, sender, recipient, body, subject, task_id, in_reply_to, correlation_id, created_at";
+const MESSAGE_COLUMNS: &str = "id, sender, recipient, body, subject, task_id, in_reply_to, \
+     correlation_id, created_at, attachments";
+
+/// Files one message may carry.
+const MAX_ATTACHMENTS: usize = 20;
 
 /// Notifications kept for a slow subscriber; beyond this it lags and reconciles (D86).
 const NOTIFICATION_BUFFER: usize = 1024;
@@ -36,6 +40,7 @@ pub struct SqliteBroker {
     pool: SqlitePool,
     directory: Arc<dyn AgentDirectory>,
     credentials: Arc<dyn Credentials>,
+    files: Arc<dyn FileStorage>,
     journal: Arc<dyn JournalWriter>,
     notifications: broadcast::Sender<Alias>,
 }
@@ -46,6 +51,7 @@ impl SqliteBroker {
         pool: SqlitePool,
         directory: Arc<dyn AgentDirectory>,
         credentials: Arc<dyn Credentials>,
+        files: Arc<dyn FileStorage>,
         journal: Arc<dyn JournalWriter>,
     ) -> Result<Self> {
         sqlx::migrate!()
@@ -56,6 +62,7 @@ impl SqliteBroker {
             pool,
             directory,
             credentials,
+            files,
             journal,
             notifications: broadcast::channel(NOTIFICATION_BUFFER).0,
         })
@@ -194,7 +201,7 @@ impl SqliteBroker {
     async fn unread(&self, recipient: &Alias) -> Result<Vec<Message>> {
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT m.id, m.sender, m.recipient, m.body, m.subject, m.task_id,
-                    m.in_reply_to, m.correlation_id, m.created_at
+                    m.in_reply_to, m.correlation_id, m.created_at, m.attachments
              FROM messages m
              LEFT JOIN cursors c ON c.recipient = m.recipient AND c.session = m.session
              WHERE m.recipient = ? AND m.seq > COALESCE(c.up_to, 0)
@@ -249,6 +256,20 @@ impl MessageBroker for SqliteBroker {
             }
         }
 
+        if message.attachments.len() > MAX_ATTACHMENTS {
+            return Err(Error::InvalidInput(format!(
+                "a message carries at most {MAX_ATTACHMENTS} files"
+            )));
+        }
+        // Only what the sender may read, and from now on the recipient may read it too.
+        let attachments: Vec<Attachment> = self
+            .files
+            .share(caller, &message.attachments, &message.to)
+            .await?
+            .into_iter()
+            .map(Attachment::from)
+            .collect();
+
         let stored = Message {
             id: MessageId::new(),
             from: caller.alias().clone(),
@@ -259,13 +280,16 @@ impl MessageBroker for SqliteBroker {
             subject: message.subject,
             task_id: message.task_id,
             in_reply_to: message.in_reply_to,
+            attachments,
         };
+        let attachments = serde_json::to_string(&stored.attachments)
+            .map_err(|e| Error::Internal(e.to_string()))?;
 
         sqlx::query(
             "INSERT INTO messages
                  (id, sender, recipient, body, subject, task_id, in_reply_to, correlation_id,
-                  session, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  session, created_at, attachments)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(stored.id.to_string())
         .bind(stored.from.as_str())
@@ -277,6 +301,7 @@ impl MessageBroker for SqliteBroker {
         .bind(stored.correlation_id.to_string())
         .bind(stored.session().to_string())
         .bind(stored.created_at.as_unix_millis())
+        .bind(attachments)
         .execute(&self.pool)
         .await
         .map_err(internal)?;
@@ -769,6 +794,7 @@ struct Row {
     in_reply_to: Option<String>,
     correlation_id: String,
     created_at: i64,
+    attachments: String,
 }
 
 impl Row {
@@ -783,6 +809,8 @@ impl Row {
             in_reply_to: self.in_reply_to.as_deref().map(parse).transpose()?,
             correlation_id: parse(&self.correlation_id)?,
             created_at: Timestamp::from_unix_millis(self.created_at)?,
+            attachments: serde_json::from_str(&self.attachments)
+                .map_err(|e| Error::Internal(e.to_string()))?,
         })
     }
 }

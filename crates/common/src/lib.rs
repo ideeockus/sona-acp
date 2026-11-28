@@ -10,6 +10,7 @@ mod session;
 mod timestamp;
 
 pub mod broker;
+pub mod files;
 pub mod gateway;
 pub mod journal;
 pub mod layout;
@@ -21,6 +22,6 @@ pub mod tasks;
 pub use alias::{Alias, InvalidAlias};
 pub use caller::Caller;
 pub use error::{Error, Result};
-pub use ids::{CorrelationId, MessageId, RunId, TaskId};
+pub use ids::{CorrelationId, FileId, MessageId, RunId, TaskId};
 pub use session::SessionKey;
 pub use timestamp::Timestamp;

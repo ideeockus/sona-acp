@@ -5,8 +5,13 @@
 
 mod extract;
 
-use axum::extract::{Path, Query, State};
-use axum::http::header::SET_COOKIE;
+use axum::body::Bytes;
+use axum::extract::rejection::BytesRejection;
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, SET_COOKIE,
+    X_CONTENT_TYPE_OPTIONS,
+};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -14,6 +19,7 @@ use axum::{Json, Router};
 use control_plane_common::broker::{
     Conversation, DeliveryControl, Message, MessageBroker, NewMessage, Thread,
 };
+use control_plane_common::files::{FileInfo, FileStorage, MAX_FILE_BYTES};
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
 use control_plane_common::registry::{
@@ -23,7 +29,7 @@ use control_plane_common::runtime::{ModelInfo, RunControl, RunFilter, RunRecord,
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{
-    Alias, Caller, CorrelationId, Error, MessageId, RunId, SessionKey, TaskId, Timestamp,
+    Alias, Caller, CorrelationId, Error, FileId, MessageId, RunId, SessionKey, TaskId, Timestamp,
 };
 use extract::{ApiError, Authenticated, Body, SESSION_COOKIE, session_cookie};
 use serde::{Deserialize, Serialize};
@@ -39,6 +45,7 @@ pub struct Services {
     pub tasks: Arc<dyn TaskManager>,
     pub gateway: Arc<dyn ToolGateway>,
     pub journal: Arc<dyn JournalReader>,
+    pub files: Arc<dyn FileStorage>,
 }
 
 type Shared = State<Arc<Services>>;
@@ -79,6 +86,15 @@ pub fn router(services: Services) -> Router {
         .route("/v1/runs/{id}/transcript", get(run_transcript))
         .route("/v1/journal", get(read_journal))
         .route("/v1/models", get(list_models))
+        .route(
+            "/v1/files",
+            post(upload_file)
+                .get(list_files)
+                // A little over a file, for the request itself.
+                .layer(DefaultBodyLimit::max(MAX_FILE_BYTES + 64 * 1024)),
+        )
+        .route("/v1/files/{id}", get(download_file))
+        .route("/v1/files/{id}/info", get(file_info))
         .with_state(Arc::new(services))
 }
 
@@ -345,6 +361,94 @@ async fn check_model(s: &Services, caller: &Caller, model: &ModelRef) -> Result<
         "Pi has no model {}/{}: check the name, and that provider_env passes its key",
         model.provider, model.id
     )))
+}
+
+#[derive(Deserialize)]
+struct UploadQuery {
+    name: String,
+}
+
+/// The body is the file as is; its type comes in `Content-Type` (D106).
+async fn upload_file(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Query(query): Query<UploadQuery>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<(StatusCode, Json<FileInfo>), ApiError> {
+    let body = body.map_err(|e| Error::InvalidInput(e.body_text()))?;
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    let file = s
+        .files
+        .upload(&caller, &query.name, content_type, body.to_vec())
+        .await?;
+    Ok((StatusCode::CREATED, Json(file)))
+}
+
+async fn list_files(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+) -> Reply<Vec<FileInfo>> {
+    Ok(Json(s.files.list(&caller).await?))
+}
+
+async fn file_info(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Reply<FileInfo> {
+    let id: FileId = parse(&id)?;
+    Ok(Json(s.files.info(&caller, id).await?))
+}
+
+/// An agent's file must not run as a page of ours, next to the session cookie: only
+/// plain images show inline, everything else downloads, and nothing may script.
+async fn download_file(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let id: FileId = parse(&id)?;
+    let (file, content) = s.files.download(&caller, id).await?;
+    let image = matches!(
+        file.content_type.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    );
+    let (content_type, disposition) = if image {
+        (file.content_type.clone(), "inline")
+    } else {
+        ("application/octet-stream".to_owned(), "attachment")
+    };
+    let headers = [
+        (CONTENT_TYPE, content_type),
+        (
+            CONTENT_DISPOSITION,
+            format!("{disposition}; filename*=UTF-8''{}", rfc5987(&file.name)),
+        ),
+        (X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        (
+            CONTENT_SECURITY_POLICY,
+            "sandbox; default-src 'none'".to_owned(),
+        ),
+        (CACHE_CONTROL, "private, no-store".to_owned()),
+    ];
+    Ok((headers, content))
+}
+
+/// A file name as a `filename*` value: every byte but the safe ones percent-encoded.
+fn rfc5987(name: &str) -> String {
+    name.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
 }
 
 async fn list_models(
