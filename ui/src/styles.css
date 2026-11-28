@@ -188,6 +188,12 @@ textarea {
   color: inherit;
   border-radius: 4px;
 }
+/* Links styled as buttons get the same shape (docs/ui.md: 4 px on what is interactive). */
+.primary,
+.outline {
+  display: inline-block;
+  border-radius: 4px;
+}
 .primary {
   padding: 8px 16px;
   border: 0;
