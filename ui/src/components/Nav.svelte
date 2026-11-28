@@ -4,9 +4,10 @@
 
   let { unread }: { unread: number } = $props();
 
-  // Triggers, Storage and Integrations come after the MVP: no data, no item.
+  // Storage and Integrations come later: no data, no item.
   const items = [
     { href: "/", label: "Overview", top: true },
+    { href: "/triggers", label: "Triggers", top: true },
     { href: "/agents", label: "Agents", top: true },
     { href: "/agents", label: "Registry" },
     { href: "/messages", label: "Messages" },

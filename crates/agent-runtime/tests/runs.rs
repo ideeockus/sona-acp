@@ -262,6 +262,9 @@ impl InboxDelivery for Inbox {
     async fn resumed_at(&self, chain: CorrelationId) -> Result<Option<Timestamp>> {
         Ok(self.resumed.lock().unwrap().get(&chain).copied())
     }
+    async fn is_read(&self, _: MessageId) -> Result<bool> {
+        unimplemented!()
+    }
 }
 
 // ---- Journal ----

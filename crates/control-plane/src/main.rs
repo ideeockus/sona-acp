@@ -16,6 +16,7 @@ use control_plane_common::files::FileStorage;
 use control_plane_common::registry::Credentials;
 use control_plane_file_storage::{NoFileStorage, S3Config, S3Store, SqliteFileStorage};
 use control_plane_message_broker::SqliteBroker;
+use control_plane_scheduler::SqliteScheduler;
 use control_plane_task_manager::SqliteTaskManager;
 use control_plane_tool_gateway::Gateway;
 use sqlx::SqlitePool;
@@ -168,6 +169,19 @@ async fn serve(config: Config) -> Result<(), Failure> {
     );
     runtime.start().await?;
 
+    let schedules = Arc::new(
+        SqliteScheduler::new(
+            database(&config.data_dir, "scheduler").await?,
+            broker.clone(),
+            broker.clone(),
+            registry.clone(),
+            journal.clone(),
+            Arc::new(Timestamp::now),
+        )
+        .await?,
+    );
+    schedules.start().await?;
+
     let app = router(Services {
         credentials: registry.clone(),
         registry,
@@ -178,6 +192,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
         gateway,
         journal,
         files,
+        schedules,
     });
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(address = %listener.local_addr()?, "listening");

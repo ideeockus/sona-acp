@@ -93,10 +93,9 @@ impl SqliteBroker {
             }
             // The operator may write to any agent.
             Caller::Operator { .. } => self.directory.agent(to).await.map(drop),
-            // Adapters are not registered yet (D71).
-            Caller::Adapter { alias } => Err(Error::Forbidden(format!(
-                "adapter {alias} is not supported yet"
-            ))),
+            // Only code inside the control plane makes an adapter caller so far: Scheduler
+            // (D107). Registered adapters with their own limits come with D71.
+            Caller::Adapter { .. } => self.directory.agent(to).await.map(drop),
         }
     }
 
@@ -572,6 +571,19 @@ impl InboxDelivery for SqliteBroker {
                 .await
                 .map_err(internal)?;
         at.map(Timestamp::from_unix_millis).transpose()
+    }
+
+    async fn is_read(&self, message: MessageId) -> Result<bool> {
+        let read: Option<bool> = sqlx::query_scalar(
+            "SELECT m.seq <= COALESCE(c.up_to, 0) FROM messages m
+             LEFT JOIN cursors c ON c.recipient = m.recipient AND c.session = m.session
+             WHERE m.id = ?",
+        )
+        .bind(message.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        read.ok_or_else(|| Error::NotFound(format!("message {message}")))
     }
 }
 

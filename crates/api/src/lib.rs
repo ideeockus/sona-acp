@@ -26,10 +26,12 @@ use control_plane_common::registry::{
     Agent, AgentCard, AgentRegistry, AgentVersion, Credentials, ModelRef,
 };
 use control_plane_common::runtime::{ModelInfo, RunControl, RunFilter, RunRecord, TranscriptEntry};
+use control_plane_common::schedules::{NewSchedule, Schedule, ScheduleUpdate, Schedules};
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{
-    Alias, Caller, CorrelationId, Error, FileId, MessageId, RunId, SessionKey, TaskId, Timestamp,
+    Alias, Caller, CorrelationId, Error, FileId, MessageId, RunId, ScheduleId, SessionKey, TaskId,
+    Timestamp,
 };
 use extract::{ApiError, Authenticated, Body, SESSION_COOKIE, session_cookie};
 use serde::{Deserialize, Serialize};
@@ -46,6 +48,7 @@ pub struct Services {
     pub gateway: Arc<dyn ToolGateway>,
     pub journal: Arc<dyn JournalReader>,
     pub files: Arc<dyn FileStorage>,
+    pub schedules: Arc<dyn Schedules>,
 }
 
 type Shared = State<Arc<Services>>;
@@ -95,6 +98,13 @@ pub fn router(services: Services) -> Router {
         )
         .route("/v1/files/{id}", get(download_file))
         .route("/v1/files/{id}/info", get(file_info))
+        .route("/v1/schedules", post(create_schedule).get(list_schedules))
+        .route(
+            "/v1/schedules/{id}",
+            get(get_schedule)
+                .patch(update_schedule)
+                .delete(delete_schedule),
+        )
         .with_state(Arc::new(services))
 }
 
@@ -449,6 +459,53 @@ fn rfc5987(name: &str) -> String {
             }
         })
         .collect()
+}
+
+async fn create_schedule(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Body(schedule): Body<NewSchedule>,
+) -> Result<(StatusCode, Json<Schedule>), ApiError> {
+    let schedule = s.schedules.create_schedule(&caller, schedule).await?;
+    Ok((StatusCode::CREATED, Json(schedule)))
+}
+
+async fn list_schedules(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+) -> Reply<Vec<Schedule>> {
+    Ok(Json(s.schedules.list_schedules(&caller).await?))
+}
+
+async fn get_schedule(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Reply<Schedule> {
+    let id: ScheduleId = parse(&id)?;
+    Ok(Json(s.schedules.get_schedule(&caller, id).await?))
+}
+
+async fn update_schedule(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+    Body(update): Body<ScheduleUpdate>,
+) -> Reply<Schedule> {
+    let id: ScheduleId = parse(&id)?;
+    Ok(Json(
+        s.schedules.update_schedule(&caller, id, update).await?,
+    ))
+}
+
+async fn delete_schedule(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let id: ScheduleId = parse(&id)?;
+    s.schedules.delete_schedule(&caller, id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_models(

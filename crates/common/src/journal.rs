@@ -13,6 +13,7 @@ pub enum Component {
     Broker,
     TaskManager,
     FileStorage,
+    Scheduler,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

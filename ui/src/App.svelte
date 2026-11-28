@@ -14,6 +14,7 @@
   import RunPage from "./screens/RunPage.svelte";
   import Settings from "./screens/Settings.svelte";
   import TaskPage from "./screens/TaskPage.svelte";
+  import Triggers from "./screens/Triggers.svelte";
   import Tasks from "./screens/Tasks.svelte";
 
   let checked = $state(false);
@@ -63,6 +64,8 @@
       {:else if match("/messages/:alias/:session")}
         {@const m = match("/messages/:alias/:session")!}
         {#key route.path}<Messages alias={m.alias} session={m.session} />{/key}
+      {:else if match("/triggers")}
+        <Triggers />
       {:else if match("/journal")}
         <Journal />
       {:else if match("/tasks")}

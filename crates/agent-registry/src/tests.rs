@@ -127,6 +127,17 @@ async fn aliases_are_unique_across_kinds() {
 }
 
 #[tokio::test]
+async fn no_agent_takes_the_schedulers_alias() {
+    let registry = registry_with_coder().await;
+    assert!(
+        registry
+            .create_agent(&operator(), card("scheduler"))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn operator_credential_authenticates() {
     let registry = registry().await;
     let secret = registry.create_operator(&alias("user")).await.unwrap();

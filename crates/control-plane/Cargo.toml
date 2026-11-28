@@ -17,6 +17,7 @@ control-plane-api.workspace = true
 control-plane-common.workspace = true
 control-plane-file-storage.workspace = true
 control-plane-message-broker.workspace = true
+control-plane-scheduler.workspace = true
 control-plane-task-manager.workspace = true
 control-plane-tool-gateway.workspace = true
 serde.workspace = true

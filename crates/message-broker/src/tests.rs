@@ -361,14 +361,32 @@ async fn message_to_the_operator_notifies_nobody() {
 }
 
 #[tokio::test]
-async fn adapters_are_not_supported_yet() {
+async fn an_adapter_writes_to_agents_and_a_read_message_shows_as_read() {
     let s = setup().await;
-    let adapter = Caller::Adapter {
-        alias: alias("gitlab"),
+    let scheduler = Caller::Adapter {
+        alias: alias("scheduler"),
     };
+    let sent = s
+        .broker
+        .send(&scheduler, to("manager", "daily report", None))
+        .await
+        .unwrap();
+    // A new chain of its own, and the agent is woken.
+    assert_eq!(s.notified(), [alias("manager")]);
+    assert!(!s.broker.is_read(sent.id).await.unwrap());
+    s.broker
+        .advance_cursor(&alias("manager"), sent.session(), sent.id)
+        .await
+        .unwrap();
+    assert!(s.broker.is_read(sent.id).await.unwrap());
     assert!(matches!(
-        s.broker.send(&adapter, to("manager", "hi", None)).await,
-        Err(Error::Forbidden(_))
+        s.broker.is_read(MessageId::new()).await,
+        Err(Error::NotFound(_))
+    ));
+    // Only to agents.
+    assert!(matches!(
+        s.broker.send(&scheduler, to("user", "hi", None)).await,
+        Err(Error::NotFound(_))
     ));
 }
 

@@ -192,6 +192,10 @@ pub trait InboxDelivery: Send + Sync {
 
     /// When the chain was last resumed. Its limits count from there (D100).
     async fn resumed_at(&self, chain: CorrelationId) -> Result<Option<Timestamp>>;
+
+    /// Whether the recipient has read the message: a finished Run moved its cursor
+    /// past it (D49), or the operator skipped it.
+    async fn is_read(&self, message: MessageId) -> Result<bool>;
 }
 
 /// What the operator calls to see and unblock delivery (D77). Exposed through the API.

@@ -7,6 +7,7 @@ use control_plane_common::registry::{Secret, Session};
 use control_plane_common::runtime::{
     ActiveRun, ModelInfo, Price, RunFilter, RunRecord, TranscriptEntry,
 };
+use control_plane_common::schedules::{NewSchedule, Schedule, ScheduleUpdate, Schedules};
 use control_plane_common::{Caller, MessageId, Result, Timestamp};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -413,6 +414,47 @@ impl FileStorage for Files {
     }
 }
 
+/// No schedules; creating one echoes it.
+struct NoSchedules;
+
+#[async_trait]
+impl Schedules for NoSchedules {
+    async fn create_schedule(&self, caller: &Caller, new: NewSchedule) -> Result<Schedule> {
+        operator_only(caller)?;
+        Ok(Schedule {
+            id: ScheduleId::new(),
+            agent: new.agent,
+            cron: new.cron,
+            timezone: new.timezone.unwrap_or_else(|| "UTC".to_owned()),
+            subject: new.subject,
+            body: new.body,
+            enabled: true,
+            created_at: Timestamp::now(),
+            last_fired_at: None,
+            last_message: None,
+            next_fire_at: None,
+        })
+    }
+    async fn list_schedules(&self, caller: &Caller) -> Result<Vec<Schedule>> {
+        operator_only(caller)?;
+        Ok(Vec::new())
+    }
+    async fn get_schedule(&self, _: &Caller, id: ScheduleId) -> Result<Schedule> {
+        Err(Error::NotFound(format!("schedule {id}")))
+    }
+    async fn update_schedule(
+        &self,
+        _: &Caller,
+        id: ScheduleId,
+        _: ScheduleUpdate,
+    ) -> Result<Schedule> {
+        Err(Error::NotFound(format!("schedule {id}")))
+    }
+    async fn delete_schedule(&self, _: &Caller, id: ScheduleId) -> Result<()> {
+        Err(Error::NotFound(format!("schedule {id}")))
+    }
+}
+
 fn setup() -> Setup {
     let broker = Arc::new(Broker {
         callers: Mutex::default(),
@@ -434,6 +476,7 @@ fn setup() -> Setup {
         gateway: Arc::new(DenyBash),
         journal: journal.clone(),
         files: Arc::new(Files),
+        schedules: Arc::new(NoSchedules),
     });
     Setup {
         app,
@@ -1100,4 +1143,36 @@ async fn a_downloaded_file_never_runs_as_our_page() {
             .unwrap()
             .starts_with("inline")
     );
+}
+
+#[tokio::test]
+async fn schedules_are_created_and_listed_by_the_operator() {
+    let s = setup();
+    let schedule = json!({ "agent": "coder", "cron": "0 9 * * *", "body": "Report." });
+    let (status, body) = call(
+        &s.app,
+        Method::POST,
+        "/v1/schedules",
+        Some(OPERATOR),
+        Some(schedule.clone()),
+    )
+    .await;
+    assert_eq!(
+        (status, body["timezone"].as_str()),
+        (StatusCode::CREATED, Some("UTC"))
+    );
+    let (status, _) = call(
+        &s.app,
+        Method::POST,
+        "/v1/schedules",
+        Some(AGENT),
+        Some(schedule),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = call(&s.app, Method::GET, "/v1/schedules", Some(OPERATOR), None).await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
+    let uri = format!("/v1/schedules/{}", ScheduleId::new());
+    let (status, _) = call(&s.app, Method::DELETE, &uri, Some(OPERATOR), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

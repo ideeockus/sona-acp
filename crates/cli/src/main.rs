@@ -10,9 +10,12 @@ use clap::{Args, Parser, Subcommand};
 use client::Client;
 use control_plane_common::broker::NewMessage;
 use control_plane_common::registry::{Agent, AgentCard};
+use control_plane_common::schedules::{NewSchedule, ScheduleUpdate};
 use control_plane_common::status::Status;
 use control_plane_common::tasks::{NewTask, TaskResult, TaskStatus, TaskUpdate};
-use control_plane_common::{Alias, CorrelationId, MessageId, RunId, SessionKey, TaskId, Timestamp};
+use control_plane_common::{
+    Alias, CorrelationId, MessageId, RunId, ScheduleId, SessionKey, TaskId, Timestamp,
+};
 use reqwest::Method;
 use serde::Serialize;
 use serde_json::Value;
@@ -91,6 +94,9 @@ enum Command {
     },
     /// The models Pi has a key for: what a card may name (D104).
     Models,
+    /// Messages to agents on a cron schedule, from @scheduler (D107).
+    #[command(subcommand)]
+    Schedules(SchedulesCommand),
 }
 
 #[derive(Subcommand)]
@@ -161,6 +167,32 @@ enum TasksCommand {
         links: Vec<String>,
         #[arg(long)]
         note: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SchedulesCommand {
+    List,
+    /// A message to the agent at every fire, each in a chain of its own.
+    Create {
+        agent: Alias,
+        /// Five fields: minute hour day-of-month month day-of-week, e.g. "0 9 * * 1-5".
+        cron: String,
+        body: String,
+        /// An IANA zone such as Europe/Moscow; UTC when not given.
+        #[arg(long)]
+        timezone: Option<String>,
+        #[arg(long)]
+        subject: Option<String>,
+    },
+    Enable {
+        id: ScheduleId,
+    },
+    Disable {
+        id: ScheduleId,
+    },
+    Delete {
+        id: ScheduleId,
     },
 }
 
@@ -372,6 +404,48 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         ),
         Command::Transcript { run } => (Method::GET, format!("/v1/runs/{run}/transcript"), None),
         Command::Models => (Method::GET, "/v1/models".to_owned(), None),
+        Command::Schedules(SchedulesCommand::List) => (Method::GET, "/v1/schedules".into(), None),
+        Command::Schedules(SchedulesCommand::Create {
+            agent,
+            cron,
+            body,
+            timezone,
+            subject,
+        }) => {
+            let schedule = NewSchedule {
+                agent,
+                cron,
+                timezone,
+                subject,
+                body,
+            };
+            (Method::POST, "/v1/schedules".into(), Some(json(schedule)))
+        }
+        Command::Schedules(SchedulesCommand::Enable { id }) => {
+            let update = ScheduleUpdate {
+                enabled: Some(true),
+                ..ScheduleUpdate::default()
+            };
+            (
+                Method::PATCH,
+                format!("/v1/schedules/{id}"),
+                Some(json(update)),
+            )
+        }
+        Command::Schedules(SchedulesCommand::Disable { id }) => {
+            let update = ScheduleUpdate {
+                enabled: Some(false),
+                ..ScheduleUpdate::default()
+            };
+            (
+                Method::PATCH,
+                format!("/v1/schedules/{id}"),
+                Some(json(update)),
+            )
+        }
+        Command::Schedules(SchedulesCommand::Delete { id }) => {
+            (Method::DELETE, format!("/v1/schedules/{id}"), None)
+        }
         Command::Runs { agent, chain } => {
             let mut query = Vec::new();
             if let Some(agent) = agent {

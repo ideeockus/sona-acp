@@ -61,6 +61,10 @@ id!(
     /// A file in File Storage (D106).
     FileId
 );
+id!(
+    /// A schedule in Scheduler (D107).
+    ScheduleId
+);
 
 #[cfg(test)]
 mod tests {

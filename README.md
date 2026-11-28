@@ -90,6 +90,17 @@ endpoint = "http://127.0.0.1:9000"
 
 Агенту нужна группа `files`: тулы `file_upload` (файл из `/work` в хранилище), `file_download` (по id в `/work`) и `file_list`. Файл прикладывается к сообщению по id, в `send_message` это `files`. Оператор прикладывает файлы в Messages кнопкой Attach и скачивает вложения там же. Без `[storage]` файлы выключены.
 
+### Расписания
+
+Scheduler (D107) шлёт агенту сообщение по cron от `@scheduler`. Каждое срабатывание — новый тред. Пока агент не прочитал прошлое, следующее пропускается; пропущенное за время простоя не досылается. Всё это видно в Journal.
+
+```text
+target/release/sapctl schedules create coder "0 9 * * 1-5" "Напиши отчёт за вчера." --timezone Europe/Moscow
+target/release/sapctl schedules list
+```
+
+То же — на экране Triggers.
+
 ## На VPS
 
 1. Сеть для агентов, один раз (D88):

@@ -142,6 +142,29 @@ export interface NewMessage {
   attachments: string[];
 }
 
+/** A message to an agent on cron, from @scheduler (D107). */
+export interface Schedule {
+  id: string;
+  agent: Alias;
+  cron: string;
+  timezone: string;
+  subject: string | null;
+  body: string;
+  enabled: boolean;
+  created_at: Time;
+  last_fired_at: Time | null;
+  last_message: string | null;
+  next_fire_at: Time | null;
+}
+
+export interface NewSchedule {
+  agent: Alias;
+  cron: string;
+  timezone: string;
+  subject: string | null;
+  body: string;
+}
+
 export interface Conversation {
   agent: Alias;
   last: Message;
