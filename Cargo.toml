@@ -15,6 +15,7 @@ async-trait = "0.1"
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 control-plane-agent-journal = { path = "crates/agent-journal" }
+control-plane-agent-memory = { path = "crates/agent-memory" }
 control-plane-agent-registry = { path = "crates/agent-registry" }
 control-plane-agent-runtime = { path = "crates/agent-runtime" }
 control-plane-api = { path = "crates/api" }

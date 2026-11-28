@@ -16,7 +16,10 @@ pub fn run_context(
         "You are {agent}.\n\
          Session: {session}. Chain: {correlation_id}.\n\
          You are notified of new messages without their text; \
-         read them with the read_messages tool.\n"
+         read them with the read_messages tool.\n\
+         Your memory outlives sessions, and none of it is shown to you by itself: \
+         memory_search it for what you may already know, memory_add facts and decisions \
+         worth keeping, memory_delete what is no longer true.\n"
     );
     if addressees.is_empty() {
         text.push_str("You may not message anyone.\n");

@@ -330,6 +330,7 @@ dependencies = [
  "axum",
  "clap",
  "control-plane-agent-journal",
+ "control-plane-agent-memory",
  "control-plane-agent-registry",
  "control-plane-agent-runtime",
  "control-plane-api",
@@ -360,6 +361,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "control-plane-agent-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "control-plane-common",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

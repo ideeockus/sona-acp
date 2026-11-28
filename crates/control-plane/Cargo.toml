@@ -11,6 +11,7 @@ publish.workspace = true
 axum.workspace = true
 clap.workspace = true
 control-plane-agent-journal.workspace = true
+control-plane-agent-memory.workspace = true
 control-plane-agent-registry.workspace = true
 control-plane-agent-runtime.workspace = true
 control-plane-api.workspace = true

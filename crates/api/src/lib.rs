@@ -22,6 +22,7 @@ use control_plane_common::broker::{
 use control_plane_common::files::{FileInfo, FileStorage, MAX_FILE_BYTES};
 use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
+use control_plane_common::memory::{AgentMemory, MemoryRecord};
 use control_plane_common::registry::{
     Agent, AgentCard, AgentRegistry, AgentVersion, Credentials, ModelRef,
 };
@@ -30,8 +31,8 @@ use control_plane_common::schedules::{NewSchedule, Schedule, ScheduleUpdate, Sch
 use control_plane_common::status::{AgentStatus, Status};
 use control_plane_common::tasks::{NewTask, Task, TaskManager, TaskStatus, TaskUpdate, TaskView};
 use control_plane_common::{
-    Alias, Caller, CorrelationId, Error, FileId, MessageId, RunId, ScheduleId, SessionKey, TaskId,
-    Timestamp,
+    Alias, Caller, CorrelationId, Error, FileId, MemoryId, MessageId, RunId, ScheduleId,
+    SessionKey, TaskId, Timestamp,
 };
 use extract::{ApiError, Authenticated, Body, SESSION_COOKIE, session_cookie};
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,7 @@ pub struct Services {
     pub journal: Arc<dyn JournalReader>,
     pub files: Arc<dyn FileStorage>,
     pub schedules: Arc<dyn Schedules>,
+    pub memory: Arc<dyn AgentMemory>,
 }
 
 type Shared = State<Arc<Services>>;
@@ -98,6 +100,13 @@ pub fn router(services: Services) -> Router {
         )
         .route("/v1/files/{id}", get(download_file))
         .route("/v1/files/{id}/info", get(file_info))
+        .route("/v1/memory", post(remember).get(own_memory))
+        .route("/v1/memory/{id}", axum::routing::delete(forget_own))
+        .route("/v1/agents/{alias}/memory", get(agent_memory))
+        .route(
+            "/v1/agents/{alias}/memory/{id}",
+            axum::routing::delete(forget),
+        )
         .route("/v1/schedules", post(create_schedule).get(list_schedules))
         .route(
             "/v1/schedules/{id}",
@@ -459,6 +468,80 @@ fn rfc5987(name: &str) -> String {
             }
         })
         .collect()
+}
+
+#[derive(Deserialize)]
+struct Remember {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct MemoryQuery {
+    q: Option<String>,
+}
+
+/// An agent's own memory: whose it is comes from the token (D108).
+async fn remember(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Body(record): Body<Remember>,
+) -> Result<(StatusCode, Json<MemoryRecord>), ApiError> {
+    let record = s.memory.add(&caller, &record.text).await?;
+    Ok((StatusCode::CREATED, Json(record)))
+}
+
+async fn own_memory(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Query(query): Query<MemoryQuery>,
+) -> Reply<Vec<MemoryRecord>> {
+    let agent = caller.alias().clone();
+    read_memory(&s, &caller, &agent, query).await
+}
+
+async fn forget_own(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let id: MemoryId = parse(&id)?;
+    let agent = caller.alias().clone();
+    s.memory.delete(&caller, &agent, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Any agent's memory, for the operator.
+async fn agent_memory(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+    Query(query): Query<MemoryQuery>,
+) -> Reply<Vec<MemoryRecord>> {
+    let agent: Alias = parse(&alias)?;
+    read_memory(&s, &caller, &agent, query).await
+}
+
+async fn forget(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path((alias, id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let agent: Alias = parse(&alias)?;
+    let id: MemoryId = parse(&id)?;
+    s.memory.delete(&caller, &agent, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn read_memory(
+    s: &Services,
+    caller: &Caller,
+    agent: &Alias,
+    query: MemoryQuery,
+) -> Reply<Vec<MemoryRecord>> {
+    Ok(Json(match query.q {
+        Some(q) => s.memory.search(caller, agent, &q).await?,
+        None => s.memory.list(caller, agent).await?,
+    }))
 }
 
 async fn create_schedule(

@@ -14,7 +14,7 @@ use control_plane_common::schedules::{NewSchedule, ScheduleUpdate};
 use control_plane_common::status::Status;
 use control_plane_common::tasks::{NewTask, TaskResult, TaskStatus, TaskUpdate};
 use control_plane_common::{
-    Alias, CorrelationId, MessageId, RunId, ScheduleId, SessionKey, TaskId, Timestamp,
+    Alias, CorrelationId, MemoryId, MessageId, RunId, ScheduleId, SessionKey, TaskId, Timestamp,
 };
 use reqwest::Method;
 use serde::Serialize;
@@ -94,6 +94,9 @@ enum Command {
     },
     /// The models Pi has a key for: what a card may name (D104).
     Models,
+    /// What agents remember (D108).
+    #[command(subcommand)]
+    Memory(MemoryCommand),
     /// Messages to agents on a cron schedule, from @scheduler (D107).
     #[command(subcommand)]
     Schedules(SchedulesCommand),
@@ -168,6 +171,18 @@ enum TasksCommand {
         #[arg(long)]
         note: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum MemoryCommand {
+    /// An agent's records, newest first, or those containing `--search`.
+    List {
+        agent: Alias,
+        #[arg(long)]
+        search: Option<String>,
+    },
+    /// Removes a record, e.g. one a prompt injection planted.
+    Delete { agent: Alias, id: MemoryId },
 }
 
 #[derive(Subcommand)]
@@ -404,6 +419,18 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         ),
         Command::Transcript { run } => (Method::GET, format!("/v1/runs/{run}/transcript"), None),
         Command::Models => (Method::GET, "/v1/models".to_owned(), None),
+        Command::Memory(MemoryCommand::List { agent, search }) => {
+            let mut path = format!("/v1/agents/{}/memory", agent.as_str());
+            if let Some(search) = search {
+                path.push_str(&format!("?q={}", query_value(&search)));
+            }
+            (Method::GET, path, None)
+        }
+        Command::Memory(MemoryCommand::Delete { agent, id }) => (
+            Method::DELETE,
+            format!("/v1/agents/{}/memory/{id}", agent.as_str()),
+            None,
+        ),
         Command::Schedules(SchedulesCommand::List) => (Method::GET, "/v1/schedules".into(), None),
         Command::Schedules(SchedulesCommand::Create {
             agent,
@@ -484,6 +511,20 @@ fn json(value: impl Serialize) -> Value {
 fn parse_status(value: &str) -> Result<TaskStatus, String> {
     serde_json::from_value(Value::String(value.to_owned()))
         .map_err(|_| "expected open, in_progress, needs_human, done or cancelled".to_owned())
+}
+
+/// A query string value: every byte but the unreserved ones percent-encoded.
+fn query_value(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

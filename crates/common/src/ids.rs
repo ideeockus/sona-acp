@@ -65,6 +65,10 @@ id!(
     /// A schedule in Scheduler (D107).
     ScheduleId
 );
+id!(
+    /// A record in Agent Memory (D108).
+    MemoryId
+);
 
 #[cfg(test)]
 mod tests {

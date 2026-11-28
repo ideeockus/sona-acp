@@ -165,6 +165,16 @@ export interface NewSchedule {
   body: string;
 }
 
+/** One thing an agent chose to remember, with the Run that wrote it (D108). */
+export interface MemoryRecord {
+  id: string;
+  agent: Alias;
+  text: string;
+  run_id: string | null;
+  correlation_id: string | null;
+  created_at: Time;
+}
+
 export interface Conversation {
   agent: Alias;
   last: Message;

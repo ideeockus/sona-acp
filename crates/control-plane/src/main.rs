@@ -7,6 +7,7 @@ mod config;
 use clap::{Parser, Subcommand};
 use config::Config;
 use control_plane_agent_journal::{Clock, FileJournal};
+use control_plane_agent_memory::SqliteMemory;
 use control_plane_agent_registry::SqliteRegistry;
 use control_plane_agent_runtime::launcher::{ContainerUser, DockerLauncher};
 use control_plane_agent_runtime::{Runtime, RuntimeConfig};
@@ -141,6 +142,13 @@ async fn serve(config: Config) -> Result<(), Failure> {
         .await?,
     );
     let gateway = Arc::new(Gateway::new(registry.clone(), journal.clone()));
+    let memory = Arc::new(
+        SqliteMemory::new(
+            database(&config.data_dir, "memory").await?,
+            registry.clone(),
+        )
+        .await?,
+    );
 
     let runtime = Arc::new(
         Runtime::new(
@@ -193,6 +201,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
         journal,
         files,
         schedules,
+        memory,
     });
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(address = %listener.local_addr()?, "listening");

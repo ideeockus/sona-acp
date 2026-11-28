@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
 use control_plane_common::broker::{InboxStatus, StoppedChain, Thread};
+use control_plane_common::memory::{AgentMemory, MemoryRecord};
 use control_plane_common::registry::{Secret, Session};
 use control_plane_common::runtime::{
     ActiveRun, ModelInfo, Price, RunFilter, RunRecord, TranscriptEntry,
@@ -455,6 +456,32 @@ impl Schedules for NoSchedules {
     }
 }
 
+/// Remembers nothing; says whose memory was asked for.
+struct Forgetful;
+
+#[async_trait]
+impl AgentMemory for Forgetful {
+    async fn add(&self, caller: &Caller, text: &str) -> Result<MemoryRecord> {
+        Ok(MemoryRecord {
+            id: MemoryId::new(),
+            agent: caller.alias().clone(),
+            text: text.to_owned(),
+            run_id: None,
+            correlation_id: None,
+            created_at: Timestamp::now(),
+        })
+    }
+    async fn list(&self, _: &Caller, agent: &Alias) -> Result<Vec<MemoryRecord>> {
+        Err(Error::NotFound(format!("list {agent}")))
+    }
+    async fn search(&self, _: &Caller, agent: &Alias, query: &str) -> Result<Vec<MemoryRecord>> {
+        Err(Error::NotFound(format!("search {agent} {query}")))
+    }
+    async fn delete(&self, _: &Caller, agent: &Alias, _: MemoryId) -> Result<()> {
+        Err(Error::NotFound(format!("delete {agent}")))
+    }
+}
+
 fn setup() -> Setup {
     let broker = Arc::new(Broker {
         callers: Mutex::default(),
@@ -477,6 +504,7 @@ fn setup() -> Setup {
         journal: journal.clone(),
         files: Arc::new(Files),
         schedules: Arc::new(NoSchedules),
+        memory: Arc::new(Forgetful),
     });
     Setup {
         app,
@@ -1175,4 +1203,36 @@ async fn schedules_are_created_and_listed_by_the_operator() {
     let uri = format!("/v1/schedules/{}", ScheduleId::new());
     let (status, _) = call(&s.app, Method::DELETE, &uri, Some(OPERATOR), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_agents_memory_is_its_own_by_token_and_any_for_the_operator() {
+    let s = setup();
+    let (status, body) = call(
+        &s.app,
+        Method::POST,
+        "/v1/memory",
+        Some(AGENT),
+        Some(json!({ "text": "fact" })),
+    )
+    .await;
+    assert_eq!(
+        (status, body["agent"].as_str()),
+        (StatusCode::CREATED, Some("coder"))
+    );
+    // Whose memory comes from the token, not from the path.
+    let (_, body) = call(&s.app, Method::GET, "/v1/memory?q=fact", Some(AGENT), None).await;
+    assert_eq!(body["detail"], "search @coder fact");
+    let (_, body) = call(
+        &s.app,
+        Method::GET,
+        "/v1/agents/manager/memory",
+        Some(OPERATOR),
+        None,
+    )
+    .await;
+    assert_eq!(body["detail"], "list @manager");
+    let uri = format!("/v1/agents/manager/memory/{}", MemoryId::new());
+    let (_, body) = call(&s.app, Method::DELETE, &uri, Some(OPERATOR), None).await;
+    assert_eq!(body["detail"], "delete @manager");
 }

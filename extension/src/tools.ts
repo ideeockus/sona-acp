@@ -179,4 +179,60 @@ const fileList = defineTool({
   },
 });
 
-export const tools = [sendMessage, readMessages, taskCreate, taskGet, taskUpdate, fileUpload, fileDownload, fileList];
+// Every agent has its own memory: it outlives sessions and is searched, not shown (D108).
+const memoryAdd = defineTool({
+  name: "memory_add",
+  label: "Remember",
+  description:
+    "Keep a fact or a decision for later sessions: one short record, not a document. Fails when memory is full: then delete what is no longer true.",
+  parameters: Type.Object({ text: Type.String({ description: "What to remember" }) }),
+  async execute(_id, p) {
+    return reply(await call("POST", "/v1/memory", { text: p.text }));
+  },
+});
+
+const memorySearch = defineTool({
+  name: "memory_search",
+  label: "Search memory",
+  description: "Find records in your memory containing the text, best matches first.",
+  parameters: Type.Object({ query: Type.String({ description: "Text to look for" }) }),
+  async execute(_id, p) {
+    return reply(await call("GET", `/v1/memory?q=${encodeURIComponent(p.query)}`));
+  },
+});
+
+const memoryList = defineTool({
+  name: "memory_list",
+  label: "List memory",
+  description: "All records in your memory, newest first.",
+  parameters: Type.Object({}),
+  async execute() {
+    return reply(await call("GET", "/v1/memory"));
+  },
+});
+
+const memoryDelete = defineTool({
+  name: "memory_delete",
+  label: "Forget",
+  description: "Delete a record from your memory by id.",
+  parameters: Type.Object({ id: Id("The record's id") }),
+  async execute(_id, p) {
+    await call("DELETE", `/v1/memory/${encodeURIComponent(p.id)}`);
+    return reply({ deleted: p.id });
+  },
+});
+
+export const tools = [
+  sendMessage,
+  readMessages,
+  taskCreate,
+  taskGet,
+  taskUpdate,
+  fileUpload,
+  fileDownload,
+  fileList,
+  memoryAdd,
+  memorySearch,
+  memoryList,
+  memoryDelete,
+];

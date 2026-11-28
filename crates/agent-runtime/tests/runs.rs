@@ -582,7 +582,7 @@ async fn a_run_delivers_its_batch_and_cleans_up() {
     assert_eq!(arg_after(&spec, "--model"), "fake/fake-1");
     assert_eq!(
         arg_after(&spec, "--tools"),
-        "read_messages,read,ls,grep,find,send_message"
+        "read_messages,memory_add,memory_list,memory_search,memory_delete,read,ls,grep,find,send_message"
     );
     assert_eq!(arg_after(&spec, "-e"), "/agent/extension");
     assert_eq!(arg_after(&spec, "--session-dir"), "/agent/sessions");

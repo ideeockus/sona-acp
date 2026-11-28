@@ -99,7 +99,14 @@ pub fn default_hue(alias: &Alias) -> u16 {
 
 /// Tools every agent has, whatever its grant (D94). A prompt only says that mail
 /// arrived (D80), so an agent without `read_messages` could not learn why it woke.
-pub const ALWAYS_GRANTED: &[&str] = &["read_messages"];
+pub const ALWAYS_GRANTED: &[&str] = &[
+    "read_messages",
+    // Every agent has its own memory (D108).
+    "memory_add",
+    "memory_list",
+    "memory_search",
+    "memory_delete",
+];
 
 impl AgentCard {
     /// The card with its hue set: as given, or derived from the alias.
@@ -242,7 +249,7 @@ mod tests {
     );
 
     #[test]
-    fn groups_grant_their_tools_and_reading_messages_always() {
+    fn groups_grant_their_tools_and_messages_and_memory_always() {
         let card = AgentCard {
             alias: "coder".parse().unwrap(),
             title: String::new(),
@@ -259,6 +266,10 @@ mod tests {
             card.tools(),
             [
                 "read_messages",
+                "memory_add",
+                "memory_list",
+                "memory_search",
+                "memory_delete",
                 "read",
                 "ls",
                 "grep",

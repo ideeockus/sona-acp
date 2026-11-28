@@ -101,6 +101,15 @@ target/release/sapctl schedules list
 
 То же — на экране Triggers.
 
+### Память
+
+У каждого агента своя память между сессиями (D108): тулы `memory_add`, `memory_search`, `memory_list`, `memory_delete`. Сама в промпт она не попадает, агент ищет. До 200 записей по 2 КБ, всего 64 КБ; когда места нет, агент сам решает, что забыть. Смотреть и удалять записи — на странице агента или так:
+
+```text
+target/release/sapctl memory list coder --search отчёт
+target/release/sapctl memory delete coder <id>
+```
+
 ## На VPS
 
 1. Сеть для агентов, один раз (D88):

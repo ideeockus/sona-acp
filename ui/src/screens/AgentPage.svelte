@@ -8,7 +8,7 @@
   import { poll } from "../lib/poll.svelte";
   import { navigate } from "../lib/router.svelte";
   import { spendSince, startOfToday, took } from "../lib/runs";
-  import type { Agent, AgentVersion, RunRecord, Status, Task } from "../lib/types";
+  import type { Agent, AgentVersion, MemoryRecord, RunRecord, Status, Task } from "../lib/types";
 
   let { alias }: { alias: string } = $props();
 
@@ -17,17 +17,19 @@
   let runs = $state<RunRecord[]>([]);
   let tasks = $state<Task[]>([]);
   let status = $state<Status | null>(null);
+  let memory = $state<MemoryRecord[]>([]);
   let missing = $state(false);
   let now = $state(Date.now());
 
   poll(async () => {
     try {
-      [agent, versions, runs, tasks, status] = await Promise.all([
+      [agent, versions, runs, tasks, status, memory] = await Promise.all([
         api.get<Agent>(`/agents/${alias}`),
         api.get<AgentVersion[]>(`/agents/${alias}/versions`),
         api.get<RunRecord[]>(`/runs?agent=${alias}`),
         api.get<Task[]>("/tasks"),
         api.get<Status>("/status"),
+        api.get<MemoryRecord[]>(`/agents/${alias}/memory`),
       ]);
       now = Date.now();
     } catch (e) {
@@ -35,6 +37,12 @@
       throw e;
     }
   });
+
+  /** A record planted by a prompt injection goes this way (spec 11). */
+  async function forget(record: MemoryRecord) {
+    await api.delete(`/agents/${alias}/memory/${record.id}`);
+    memory = memory.filter((r) => r.id !== record.id);
+  }
 
   const me = $derived(status?.agents.find((a) => a.alias === alias));
   const seen = $derived(look(me));
@@ -110,6 +118,21 @@
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Memory</h2><span class="mono small muted">{memory.length} records · the agent searches it, nothing is shown to it by itself</span></div>
+        {#each memory as record (record.id)}
+          <div class="memory">
+            <p>{record.text}</p>
+            <span class="mono small muted">
+              {since(record.created_at, now)} ago{#if record.run_id} · <a href="/runs/{record.run_id}">run</a>{/if}
+            </span>
+            <Confirm label="Delete" question="Forget this?" confirm="Delete" danger onconfirm={() => forget(record)} />
+          </div>
+        {:else}
+          <p class="panel-body muted">Nothing remembered yet.</p>
+        {/each}
       </section>
 
       {#if theirs.length}
@@ -247,5 +270,19 @@
     flex-direction: column;
     gap: 10px;
     align-items: flex-start;
+  }
+  .memory {
+    padding: 10px 16px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .memory p {
+    flex: 1 1 100%;
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 </style>
