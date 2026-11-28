@@ -9,7 +9,7 @@ mod status;
 use clap::{Args, Parser, Subcommand};
 use client::Client;
 use control_plane_common::broker::NewMessage;
-use control_plane_common::registry::{Agent, AgentCard};
+use control_plane_common::registry::{Adapter, Agent, AgentCard};
 use control_plane_common::schedules::{NewSchedule, ScheduleUpdate};
 use control_plane_common::skills::GitSkill;
 use control_plane_common::status::Status;
@@ -95,6 +95,9 @@ enum Command {
     },
     /// The models Pi has a key for: what a card may name (D104).
     Models,
+    /// External senders such as @github, which bring events in (D110).
+    #[command(subcommand)]
+    Adapters(AdaptersCommand),
     /// The skill library (D109).
     #[command(subcommand)]
     Skills(SkillsCommand),
@@ -174,6 +177,35 @@ enum TasksCommand {
         links: Vec<String>,
         #[arg(long)]
         note: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdaptersCommand {
+    List,
+    /// Creates an adapter and prints its credential, shown this once.
+    Create {
+        alias: Alias,
+        #[arg(long)]
+        title: String,
+        /// An agent it may write to; repeat for more.
+        #[arg(long = "to")]
+        to: Vec<Alias>,
+    },
+    /// Replaces its title and recipients.
+    Update {
+        alias: Alias,
+        #[arg(long)]
+        title: String,
+        #[arg(long = "to")]
+        to: Vec<Alias>,
+    },
+    /// Issues a new credential; the old one stops working at once.
+    Rotate {
+        alias: Alias,
+    },
+    Delete {
+        alias: Alias,
     },
 }
 
@@ -456,6 +488,34 @@ fn request(command: Command) -> Result<(Method, String, Option<Value>), String> 
         ),
         Command::Transcript { run } => (Method::GET, format!("/v1/runs/{run}/transcript"), None),
         Command::Models => (Method::GET, "/v1/models".to_owned(), None),
+        Command::Adapters(AdaptersCommand::List) => (Method::GET, "/v1/adapters".into(), None),
+        Command::Adapters(AdaptersCommand::Create { alias, title, to }) => {
+            let adapter = Adapter {
+                alias,
+                title,
+                allow_message_to: to,
+            };
+            (Method::POST, "/v1/adapters".into(), Some(json(adapter)))
+        }
+        Command::Adapters(AdaptersCommand::Update { alias, title, to }) => {
+            let path = format!("/v1/adapters/{}", alias.as_str());
+            let adapter = Adapter {
+                alias,
+                title,
+                allow_message_to: to,
+            };
+            (Method::PUT, path, Some(json(adapter)))
+        }
+        Command::Adapters(AdaptersCommand::Rotate { alias }) => (
+            Method::POST,
+            format!("/v1/adapters/{}/rotate", alias.as_str()),
+            None,
+        ),
+        Command::Adapters(AdaptersCommand::Delete { alias }) => (
+            Method::DELETE,
+            format!("/v1/adapters/{}", alias.as_str()),
+            None,
+        ),
         Command::Skills(SkillsCommand::List) => (Method::GET, "/v1/skills".into(), None),
         Command::Skills(SkillsCommand::Show { name }) => (
             Method::GET,

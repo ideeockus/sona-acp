@@ -4,13 +4,13 @@ mod token;
 
 use async_trait::async_trait;
 use control_plane_common::registry::{
-    Agent, AgentCard, AgentDirectory, AgentRegistry, AgentState, AgentVersion, Credentials, Secret,
-    Session,
+    Adapter, AdapterDirectory, Adapters, Agent, AgentCard, AgentDirectory, AgentRegistry,
+    AgentState, AgentVersion, Credentials, Secret, Session,
 };
 use control_plane_common::{Alias, Caller, CorrelationId, Error, Result, RunId, Timestamp};
 use sqlx::{SqliteExecutor, SqlitePool};
 use std::str::FromStr;
-use token::{OPERATOR_PREFIX, RUN_PREFIX, SESSION_PREFIX, TOKEN_HEX_LEN};
+use token::{ADAPTER_PREFIX, OPERATOR_PREFIX, RUN_PREFIX, SESSION_PREFIX, TOKEN_HEX_LEN};
 
 /// How long a browser session lasts, counted from login (D103).
 const SESSION_LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -39,6 +39,30 @@ impl SqliteRegistry {
         .map_err(internal)?;
         row.ok_or_else(|| Error::NotFound(format!("agent {alias}")))?
             .into_agent()
+    }
+
+    async fn adapter_of(&self, alias: &Alias) -> Result<Adapter> {
+        let card: Option<String> =
+            sqlx::query_scalar("SELECT card FROM principals WHERE alias = ? AND kind = 'adapter'")
+                .bind(alias.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(internal)?;
+        let card = card.ok_or_else(|| Error::NotFound(format!("adapter {alias}")))?;
+        decode_adapter(alias, &card)
+    }
+
+    /// An adapter writes to agents only, and only to ones that exist.
+    async fn check_recipients(&self, adapter: &Adapter) -> Result<()> {
+        if adapter.title.trim().is_empty() {
+            return Err(Error::InvalidInput("an adapter needs a title".to_owned()));
+        }
+        for to in &adapter.allow_message_to {
+            self.current(to)
+                .await
+                .map_err(|_| Error::InvalidInput(format!("{to} is not an agent")))?;
+        }
+        Ok(())
     }
 
     async fn is_active(&self, credential: &str) -> Result<bool> {
@@ -183,6 +207,90 @@ impl AgentRegistry for SqliteRegistry {
 }
 
 #[async_trait]
+impl Adapters for SqliteRegistry {
+    async fn create_adapter(&self, caller: &Caller, adapter: Adapter) -> Result<Secret> {
+        require_operator(caller)?;
+        self.check_recipients(&adapter).await?;
+        // One transaction: a failure must not leave the alias taken with no credential.
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        insert_principal(
+            &mut *tx,
+            &adapter.alias,
+            "adapter",
+            Some(encode_adapter(&adapter)?),
+        )
+        .await?;
+        let secret = token::generate(ADAPTER_PREFIX);
+        store_credential(&mut *tx, &secret, &adapter.alias, None).await?;
+        tx.commit().await.map_err(internal)?;
+        Ok(secret)
+    }
+
+    async fn list_adapters(&self, caller: &Caller) -> Result<Vec<Adapter>> {
+        require_operator(caller)?;
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT alias, card FROM principals WHERE kind = 'adapter' ORDER BY alias",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        rows.iter()
+            .map(|(alias, card)| decode_adapter(&parse(alias)?, card))
+            .collect()
+    }
+
+    async fn update_adapter(&self, caller: &Caller, adapter: Adapter) -> Result<Adapter> {
+        require_operator(caller)?;
+        self.adapter_of(&adapter.alias).await?;
+        self.check_recipients(&adapter).await?;
+        sqlx::query("UPDATE principals SET card = ? WHERE alias = ? AND kind = 'adapter'")
+            .bind(encode_adapter(&adapter)?)
+            .bind(adapter.alias.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        self.adapter_of(&adapter.alias).await
+    }
+
+    async fn rotate_adapter(&self, caller: &Caller, alias: &Alias) -> Result<Secret> {
+        require_operator(caller)?;
+        self.adapter_of(alias).await?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        revoke_tokens_of(&mut *tx, alias).await?;
+        let secret = token::generate(ADAPTER_PREFIX);
+        store_credential(&mut *tx, &secret, alias, None).await?;
+        tx.commit().await.map_err(internal)?;
+        Ok(secret)
+    }
+
+    async fn delete_adapter(&self, caller: &Caller, alias: &Alias) -> Result<()> {
+        require_operator(caller)?;
+        self.adapter_of(alias).await?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
+        revoke_tokens_of(&mut *tx, alias).await?;
+        sqlx::query("DELETE FROM principals WHERE alias = ?")
+            .bind(alias.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        sqlx::query("INSERT INTO retired_aliases (alias, retired_at) VALUES (?, ?)")
+            .bind(alias.as_str())
+            .bind(Timestamp::now().as_unix_millis())
+            .execute(&mut *tx)
+            .await
+            .map_err(internal)?;
+        tx.commit().await.map_err(internal)
+    }
+}
+
+#[async_trait]
+impl AdapterDirectory for SqliteRegistry {
+    async fn adapter(&self, alias: &Alias) -> Result<Adapter> {
+        self.adapter_of(alias).await
+    }
+}
+
+#[async_trait]
 impl AgentDirectory for SqliteRegistry {
     async fn agent(&self, alias: &Alias) -> Result<AgentCard> {
         Ok(self.current(alias).await?.card)
@@ -251,6 +359,7 @@ impl Credentials for SqliteRegistry {
         let alias = parse(&alias)?;
         match (kind.as_str(), run_id, correlation_id) {
             ("operator", None, None) => Ok(Caller::Operator { alias }),
+            ("adapter", None, None) => Ok(Caller::Adapter { alias }),
             ("agent", Some(run_id), Some(correlation_id)) => Ok(Caller::Agent {
                 alias,
                 run_id: parse(&run_id)?,
@@ -370,6 +479,31 @@ async fn set_disabled(db: impl SqliteExecutor<'_>, alias: &Alias, disabled: bool
         return Err(Error::NotFound(format!("agent {alias}")));
     }
     Ok(())
+}
+
+/// What `principals.card` keeps for an adapter: everything but the alias.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AdapterCard {
+    title: String,
+    allow_message_to: Vec<Alias>,
+}
+
+fn encode_adapter(adapter: &Adapter) -> Result<String> {
+    serde_json::to_string(&AdapterCard {
+        title: adapter.title.trim().to_owned(),
+        allow_message_to: adapter.allow_message_to.clone(),
+    })
+    .map_err(|e| Error::Internal(e.to_string()))
+}
+
+fn decode_adapter(alias: &Alias, card: &str) -> Result<Adapter> {
+    let card: AdapterCard =
+        serde_json::from_str(card).map_err(|e| Error::Internal(e.to_string()))?;
+    Ok(Adapter {
+        alias: alias.clone(),
+        title: card.title,
+        allow_message_to: card.allow_message_to,
+    })
 }
 
 async fn revoke_tokens_of(db: impl SqliteExecutor<'_>, alias: &Alias) -> Result<()> {

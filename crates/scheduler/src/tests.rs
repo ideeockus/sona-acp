@@ -31,6 +31,7 @@ impl MessageBroker for Broker {
             correlation_id: CorrelationId::new(),
             created_at: Timestamp::now(),
             attachments: Vec::new(),
+            external: false,
         };
         self.sent
             .lock()

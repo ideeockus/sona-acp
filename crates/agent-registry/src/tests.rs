@@ -552,3 +552,152 @@ async fn only_the_operator_credential_opens_a_session() {
         Err(Error::Unauthenticated)
     ));
 }
+
+fn github(to: &[&str]) -> Adapter {
+    Adapter {
+        alias: alias("github"),
+        title: "Issues of the billing repo".to_owned(),
+        allow_message_to: to.iter().map(|a| alias(a)).collect(),
+    }
+}
+
+#[tokio::test]
+async fn an_adapter_signs_in_with_its_own_credential() {
+    let registry = registry_with_coder().await;
+    let secret = registry
+        .create_adapter(&operator(), github(&["coder"]))
+        .await
+        .unwrap();
+    assert!(secret.expose().starts_with(ADAPTER_PREFIX));
+    assert_eq!(
+        registry.authenticate(secret.expose()).await.unwrap(),
+        Caller::Adapter {
+            alias: alias("github")
+        }
+    );
+    assert_eq!(
+        registry.adapter(&alias("github")).await.unwrap(),
+        github(&["coder"])
+    );
+    // An adapter is not an agent, and its alias is taken.
+    assert!(registry.agent(&alias("github")).await.is_err());
+    assert!(
+        registry
+            .create_agent(&operator(), card("github"))
+            .await
+            .is_err()
+    );
+
+    // A new credential: the old one stops at once.
+    let rotated = registry
+        .rotate_adapter(&operator(), &alias("github"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry.authenticate(secret.expose()).await,
+        Err(Error::Unauthenticated)
+    ));
+    registry.authenticate(rotated.expose()).await.unwrap();
+
+    registry
+        .delete_adapter(&operator(), &alias("github"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry.authenticate(rotated.expose()).await,
+        Err(Error::Unauthenticated)
+    ));
+    // Never given again.
+    assert!(
+        registry
+            .create_adapter(&operator(), github(&[]))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn an_adapter_writes_only_to_agents_that_exist_and_only_the_operator_manages_it() {
+    let registry = registry_with_coder().await;
+    assert!(matches!(
+        registry
+            .create_adapter(&operator(), github(&["ghost"]))
+            .await,
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        registry
+            .create_adapter(
+                &operator(),
+                Adapter {
+                    title: " ".to_owned(),
+                    ..github(&[])
+                }
+            )
+            .await,
+        Err(Error::InvalidInput(_))
+    ));
+    let agent = Caller::Agent {
+        alias: alias("coder"),
+        run_id: RunId::new(),
+        correlation_id: CorrelationId::new(),
+    };
+    assert!(matches!(
+        registry.create_adapter(&agent, github(&["coder"])).await,
+        Err(Error::Forbidden(_))
+    ));
+    registry
+        .create_adapter(&operator(), github(&[]))
+        .await
+        .unwrap();
+    let updated = registry
+        .update_adapter(&operator(), github(&["coder"]))
+        .await
+        .unwrap();
+    assert_eq!(updated.allow_message_to, [alias("coder")]);
+    assert_eq!(
+        registry.list_adapters(&operator()).await.unwrap(),
+        [updated]
+    );
+}
+
+#[tokio::test]
+async fn principals_survive_the_rebuild_for_adapters() {
+    let pool = memory_pool().await;
+    let mut before = sqlx::migrate!();
+    before.migrations = before.migrations[..6].to_vec().into();
+    before.run(&pool).await.unwrap();
+    let old = SqliteRegistry { pool: pool.clone() };
+    let secret = old.create_operator(&alias("user")).await.unwrap();
+    old.create_agent(&operator(), card("coder")).await.unwrap();
+    let session = old.open_session(secret.expose()).await.unwrap();
+
+    let registry = SqliteRegistry::new(pool).await.unwrap();
+    assert_eq!(
+        registry.authenticate(secret.expose()).await.unwrap(),
+        operator()
+    );
+    assert_eq!(
+        registry.agent(&alias("coder")).await.unwrap().title,
+        "Writes code"
+    );
+    assert_eq!(
+        registry
+            .agent_versions(&operator(), &alias("coder"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        registry
+            .session_caller(session.secret.expose())
+            .await
+            .unwrap(),
+        operator()
+    );
+    registry
+        .create_adapter(&operator(), github(&["coder"]))
+        .await
+        .unwrap();
+}

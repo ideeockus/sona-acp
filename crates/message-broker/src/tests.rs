@@ -1,6 +1,8 @@
 use super::*;
 use control_plane_common::files::FileInfo;
-use control_plane_common::registry::{Agent, AgentCard, AgentState, ModelRef, Secret, Session};
+use control_plane_common::registry::{
+    Adapter, Agent, AgentCard, AgentState, ModelRef, Secret, Session,
+};
 use control_plane_common::{FileId, RunId};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Mutex;
@@ -118,6 +120,27 @@ impl FileStorage for Files {
     }
 }
 
+/// One registered adapter, `github`, which may write to `manager`.
+struct OneAdapter;
+
+#[async_trait]
+impl AdapterDirectory for OneAdapter {
+    async fn adapter(&self, alias: &Alias) -> Result<Adapter> {
+        if alias.as_str() != "github" {
+            return Err(Error::NotFound(format!("adapter {alias}")));
+        }
+        Ok(Adapter {
+            alias: alias.clone(),
+            title: "Issues".to_owned(),
+            allow_message_to: vec![alias_of_github_target()],
+        })
+    }
+}
+
+fn alias_of_github_target() -> Alias {
+    "manager".parse().unwrap()
+}
+
 /// Keeps every recorded event.
 #[derive(Default)]
 struct Recorded(Mutex<Vec<Event>>);
@@ -195,6 +218,7 @@ async fn setup_on(pool: SqlitePool) -> Setup {
     let broker = SqliteBroker::new(
         pool,
         directory.clone(),
+        Arc::new(OneAdapter),
         Arc::new(OneActiveToken),
         files.clone(),
         journal.clone(),
@@ -1156,4 +1180,60 @@ async fn a_file_the_sender_cannot_read_stops_the_message() {
         s.broker.send(&operator(), many).await,
         Err(Error::InvalidInput(_))
     ));
+}
+
+#[tokio::test]
+async fn an_adapter_writes_only_where_it_may_and_its_text_is_external() {
+    let s = setup().await;
+    let github = Caller::Adapter {
+        alias: alias("github"),
+    };
+    let sent = s
+        .broker
+        .send(&github, to("manager", "Issue #12 assigned to you", None))
+        .await
+        .unwrap();
+    assert!(sent.external);
+    let read = s
+        .broker
+        .read_messages(&agent("manager", sent.correlation_id), sent.session())
+        .await
+        .unwrap();
+    assert!(read[0].external);
+    assert!(matches!(
+        s.broker.send(&github, to("coder", "hi", None)).await,
+        Err(Error::Forbidden(_))
+    ));
+    // Scheduler's text is the operator's, not external.
+    let scheduler = Caller::Adapter {
+        alias: alias("scheduler"),
+    };
+    let scheduled = s
+        .broker
+        .send(&scheduler, to("coder", "report", None))
+        .await
+        .unwrap();
+    assert!(!scheduled.external);
+}
+
+#[tokio::test]
+async fn nobody_writes_to_senders_that_read_nothing() {
+    let s = setup().await;
+    let coder = agent("coder", CorrelationId::new());
+    for (to_whom, says) in [("github", "is an adapter"), ("scheduler", "nobody reads")] {
+        let refused = s
+            .broker
+            .send(&operator(), to(to_whom, "thanks", None))
+            .await;
+        assert!(
+            matches!(&refused, Err(Error::Forbidden(reason)) if reason.contains(says)),
+            "{refused:?}"
+        );
+        assert!(
+            s.broker
+                .send(&coder, to(to_whom, "ok", None))
+                .await
+                .is_err()
+        );
+    }
 }

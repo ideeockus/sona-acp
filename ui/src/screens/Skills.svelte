@@ -80,16 +80,18 @@
 
 <header class="screen-header">
   <h1>{#if name}<a class="muted" href="/skills">Skills /</a> {name}{:else}Skills{/if}</h1>
-  {#if !name && !open}<button class="primary" onclick={() => (open = true)}>Add from git</button>{/if}
 </header>
 
 <div class="screen-body">
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 
   {#if open && !name}
-    <form class="panel" onsubmit={add}>
-      <div class="panel-head"><h2>Add from git</h2><span class="mono small muted">arrives disabled</span></div>
-      <div class="panel-body grid">
+    <section class="panel">
+      <div class="panel-head"><h2>Add a skill</h2><span class="mono small muted">it arrives disabled: review it, then enable</span></div>
+      <div class="sources">
+    <form class="source" onsubmit={add}>
+      <h3>From a git repository</h3>
+      <div class="grid">
         <label class="wide">
           Repository
           <input class="mono" bind:value={draft.url} required placeholder="https://github.com/anthropics/skills" autocomplete="off" />
@@ -110,6 +112,13 @@
         </div>
       </div>
     </form>
+        <div class="source">
+          <h3>Written by an agent</h3>
+          <p class="muted">An agent writes a skill in its workdir and calls <span class="mono">skill_propose</span>. It lands here disabled, marked with who proposed it.</p>
+          <p class="muted">Public directories index GitHub without review, and a skill is instructions plus scripts: read SKILL.md and the scripts before enabling.</p>
+        </div>
+      </div>
+    </section>
   {/if}
 
   {#if name && detail}
@@ -147,6 +156,10 @@
     </section>
   {:else if skills}
     <section class="panel">
+      <div class="panel-head">
+        <h2>Library</h2>
+        {#if !open}<button class="text-button" onclick={() => (open = true)}>+ Add skill</button>{/if}
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Skill</th><th>When to use</th><th>Source</th><th>Agents</th><th>State</th></tr></thead>
@@ -155,7 +168,7 @@
               <tr class="link" onclick={() => navigate(`/skills/${s.name}`)}>
                 <td class="mono"><a href="/skills/{s.name}">{s.name}</a></td>
                 <td class="description" title={s.description}>{s.description}</td>
-                <td class="mono muted small">{origin(s)}</td>
+                <td class="mono muted small clip" title={origin(s)}>{origin(s)}</td>
                 <td class="mono small">{holders(s.name).map((a) => `@${a}`).join(", ") || "—"}</td>
                 <td class="mono small" class:live={s.enabled} class:muted={!s.enabled}>{s.enabled ? "enabled" : "disabled"}</td>
               </tr>
@@ -187,6 +200,33 @@
     justify-content: flex-end;
     align-items: center;
     gap: 12px;
+  }
+  .sources {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+  .source {
+    padding: 14px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .source + .source {
+    border-left: 1px solid var(--line);
+  }
+  .source h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .source p {
+    margin: 0;
+  }
+  .clip {
+    max-width: 260px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .description {
     max-width: 420px;
@@ -235,7 +275,7 @@
     font-family: var(--mono);
     font-size: 12px;
   }
-  form {
-    margin-bottom: 16px;
+  .panel + .panel {
+    margin-top: 16px;
   }
 </style>

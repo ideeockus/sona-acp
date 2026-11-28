@@ -4,7 +4,7 @@ use axum::body::Body as HttpBody;
 use axum::http::{Method, Request};
 use control_plane_common::broker::{InboxStatus, StoppedChain, Thread};
 use control_plane_common::memory::{AgentMemory, MemoryRecord};
-use control_plane_common::registry::{Secret, Session};
+use control_plane_common::registry::{Adapter, Adapters, Secret, Session};
 use control_plane_common::runtime::{
     ActiveRun, ModelInfo, Price, RunFilter, RunRecord, TranscriptEntry,
 };
@@ -158,6 +158,7 @@ impl MessageBroker for Broker {
             task_id: message.task_id,
             in_reply_to: message.in_reply_to,
             attachments: Vec::new(),
+            external: false,
             correlation_id: self.chain,
             created_at: Timestamp::now(),
         })
@@ -525,6 +526,30 @@ impl SkillLibrary for Library {
     }
 }
 
+/// No adapters; creating one issues a fixed credential.
+struct NoAdapters;
+
+#[async_trait]
+impl Adapters for NoAdapters {
+    async fn create_adapter(&self, caller: &Caller, _: Adapter) -> Result<Secret> {
+        operator_only(caller)?;
+        Ok(Secret::new("sona_plane_ad_test".to_owned()))
+    }
+    async fn list_adapters(&self, caller: &Caller) -> Result<Vec<Adapter>> {
+        operator_only(caller)?;
+        Ok(Vec::new())
+    }
+    async fn update_adapter(&self, _: &Caller, adapter: Adapter) -> Result<Adapter> {
+        Ok(adapter)
+    }
+    async fn rotate_adapter(&self, _: &Caller, alias: &Alias) -> Result<Secret> {
+        Err(Error::NotFound(format!("adapter {alias}")))
+    }
+    async fn delete_adapter(&self, _: &Caller, alias: &Alias) -> Result<()> {
+        Err(Error::NotFound(format!("adapter {alias}")))
+    }
+}
+
 fn setup() -> Setup {
     let broker = Arc::new(Broker {
         callers: Mutex::default(),
@@ -538,6 +563,7 @@ fn setup() -> Setup {
     let journal = Arc::new(Journal::default());
     let app = router(Services {
         credentials: Arc::new(Tokens),
+        adapters: Arc::new(NoAdapters),
         registry: Arc::new(Registry(log.clone())),
         broker: broker.clone(),
         delivery,
@@ -1307,4 +1333,40 @@ async fn a_card_names_only_skills_the_library_has() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["detail"].as_str().unwrap().contains("ghost"));
+}
+
+#[tokio::test]
+async fn an_adapters_credential_is_shown_when_issued() {
+    let s = setup();
+    let adapter = json!({ "alias": "github", "title": "Issues", "allow_message_to": ["coder"] });
+    let (status, body) = call(
+        &s.app,
+        Method::POST,
+        "/v1/adapters",
+        Some(OPERATOR),
+        Some(adapter.clone()),
+    )
+    .await;
+    assert_eq!(
+        (status, body["credential"].as_str()),
+        (StatusCode::CREATED, Some("sona_plane_ad_test"))
+    );
+    let (status, _) = call(
+        &s.app,
+        Method::POST,
+        "/v1/adapters",
+        Some(AGENT),
+        Some(adapter.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = call(
+        &s.app,
+        Method::PUT,
+        "/v1/adapters/gitlab",
+        Some(OPERATOR),
+        Some(adapter),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

@@ -555,6 +555,7 @@ fn message(to: &str, task_id: Option<TaskId>, chain: CorrelationId) -> Message {
         task_id,
         in_reply_to: None,
         attachments: Vec::new(),
+        external: false,
         correlation_id: chain,
         created_at: Timestamp::now(),
     }

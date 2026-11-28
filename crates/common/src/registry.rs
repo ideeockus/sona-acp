@@ -211,6 +211,41 @@ pub trait AgentDirectory: Send + Sync {
     async fn record(&self, alias: &Alias) -> Result<Agent>;
 }
 
+/// An external sender such as `@github` (D35, D71, D110). It brings events in as
+/// messages to the agents it may write to, and reads nothing: agents cannot message it.
+/// What it sends is marked external, never to be taken for instructions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Adapter {
+    pub alias: Alias,
+    /// What it brings, e.g. "GitHub issues of the billing repo".
+    pub title: String,
+    pub allow_message_to: Vec<Alias>,
+}
+
+/// The operator's management of adapters. The credential is shown once.
+#[async_trait]
+pub trait Adapters: Send + Sync {
+    async fn create_adapter(&self, caller: &Caller, adapter: Adapter) -> Result<Secret>;
+
+    /// By alias.
+    async fn list_adapters(&self, caller: &Caller) -> Result<Vec<Adapter>>;
+
+    /// Title and recipients; the alias never changes.
+    async fn update_adapter(&self, caller: &Caller, adapter: Adapter) -> Result<Adapter>;
+
+    /// A new credential; the old one stops working at once.
+    async fn rotate_adapter(&self, caller: &Caller, alias: &Alias) -> Result<Secret>;
+
+    /// Its credential is revoked and its alias never given again, as for an agent.
+    async fn delete_adapter(&self, caller: &Caller, alias: &Alias) -> Result<()>;
+}
+
+/// What Broker asks of an adapter, internal.
+#[async_trait]
+pub trait AdapterDirectory: Send + Sync {
+    async fn adapter(&self, alias: &Alias) -> Result<Adapter>;
+}
+
 /// Issuing and checking credentials. Internal, never exposed through the API.
 #[async_trait]
 pub trait Credentials: Send + Sync {

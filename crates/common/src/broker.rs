@@ -38,6 +38,9 @@ pub struct Message {
     pub created_at: Timestamp,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// From an adapter: text from outside, data and never instructions (D110).
+    #[serde(default)]
+    pub external: bool,
 }
 
 impl Message {

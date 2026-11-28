@@ -124,6 +124,8 @@ export interface FileInfo extends Attachment {
 
 export interface Message {
   attachments: Attachment[];
+  /** From an adapter: text from outside (D110). */
+  external: boolean;
   id: string;
   from: Alias;
   to: Alias;
@@ -198,6 +200,13 @@ export interface GitSkill {
   url: string;
   git_ref: string | null;
   path: string | null;
+}
+
+/** An external sender such as @github: brings events in, reads nothing (D110). */
+export interface Adapter {
+  alias: Alias;
+  title: string;
+  allow_message_to: Alias[];
 }
 
 export interface Conversation {

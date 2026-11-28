@@ -128,6 +128,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
             database(&config.data_dir, "broker").await?,
             registry.clone(),
             registry.clone(),
+            registry.clone(),
             files.clone(),
             journal.clone(),
         )
@@ -203,6 +204,7 @@ async fn serve(config: Config) -> Result<(), Failure> {
 
     let app = router(Services {
         credentials: registry.clone(),
+        adapters: registry.clone(),
         registry,
         broker: broker.clone(),
         delivery: broker,

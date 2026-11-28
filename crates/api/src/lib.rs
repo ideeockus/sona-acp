@@ -24,7 +24,7 @@ use control_plane_common::gateway::{ToolCall, ToolGateway, Verdict};
 use control_plane_common::journal::{JournalEntry, JournalFilter, JournalReader};
 use control_plane_common::memory::{AgentMemory, MemoryRecord};
 use control_plane_common::registry::{
-    Agent, AgentCard, AgentRegistry, AgentVersion, Credentials, ModelRef,
+    Adapter, Adapters, Agent, AgentCard, AgentRegistry, AgentVersion, Credentials, ModelRef,
 };
 use control_plane_common::runtime::{ModelInfo, RunControl, RunFilter, RunRecord, TranscriptEntry};
 use control_plane_common::schedules::{NewSchedule, Schedule, ScheduleUpdate, Schedules};
@@ -42,6 +42,7 @@ use std::sync::Arc;
 /// The components the API exposes, each through its external trait.
 pub struct Services {
     pub credentials: Arc<dyn Credentials>,
+    pub adapters: Arc<dyn Adapters>,
     pub registry: Arc<dyn AgentRegistry>,
     pub broker: Arc<dyn MessageBroker>,
     pub delivery: Arc<dyn DeliveryControl>,
@@ -109,6 +110,12 @@ pub fn router(services: Services) -> Router {
             "/v1/agents/{alias}/memory/{id}",
             axum::routing::delete(forget),
         )
+        .route("/v1/adapters", post(create_adapter).get(list_adapters))
+        .route(
+            "/v1/adapters/{alias}",
+            axum::routing::put(update_adapter).delete(delete_adapter),
+        )
+        .route("/v1/adapters/{alias}/rotate", post(rotate_adapter))
         .route("/v1/skills", post(add_skill).get(list_skills))
         .route(
             "/v1/skills/proposals",
@@ -601,6 +608,64 @@ async fn delete_schedule(
 ) -> Result<StatusCode, ApiError> {
     let id: ScheduleId = parse(&id)?;
     s.schedules.delete_schedule(&caller, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// An adapter's credential, shown once (D71).
+#[derive(Serialize)]
+struct Issued {
+    credential: String,
+}
+
+async fn create_adapter(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Body(adapter): Body<Adapter>,
+) -> Result<(StatusCode, Json<Issued>), ApiError> {
+    let secret = s.adapters.create_adapter(&caller, adapter).await?;
+    let credential = secret.expose().to_owned();
+    Ok((StatusCode::CREATED, Json(Issued { credential })))
+}
+
+async fn list_adapters(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+) -> Reply<Vec<Adapter>> {
+    Ok(Json(s.adapters.list_adapters(&caller).await?))
+}
+
+async fn update_adapter(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+    Body(adapter): Body<Adapter>,
+) -> Reply<Adapter> {
+    let alias: Alias = parse(&alias)?;
+    if adapter.alias != alias {
+        return Err(Error::InvalidInput("an adapter's alias never changes".to_owned()).into());
+    }
+    Ok(Json(s.adapters.update_adapter(&caller, adapter).await?))
+}
+
+async fn rotate_adapter(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+) -> Reply<Issued> {
+    let alias: Alias = parse(&alias)?;
+    let secret = s.adapters.rotate_adapter(&caller, &alias).await?;
+    Ok(Json(Issued {
+        credential: secret.expose().to_owned(),
+    }))
+}
+
+async fn delete_adapter(
+    State(s): Shared,
+    Authenticated(caller): Authenticated,
+    Path(alias): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let alias: Alias = parse(&alias)?;
+    s.adapters.delete_adapter(&caller, &alias).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -7,7 +7,8 @@ use control_plane_common::broker::{
 };
 use control_plane_common::files::{Attachment, FileStorage};
 use control_plane_common::journal::{Component, Decision, Event, JournalWriter};
-use control_plane_common::registry::{AgentDirectory, AgentState, Credentials};
+use control_plane_common::registry::{AdapterDirectory, AgentDirectory, AgentState, Credentials};
+use control_plane_common::schedules::SCHEDULER;
 use control_plane_common::{
     Alias, Caller, CorrelationId, Error, MessageId, Result, SessionKey, TaskId, Timestamp,
 };
@@ -28,7 +29,7 @@ const BETWEEN: &str = "((sender = ?1 AND recipient = ?2) OR (sender = ?2 AND rec
 
 /// Columns of a `Row`, for queries on `messages`.
 const MESSAGE_COLUMNS: &str = "id, sender, recipient, body, subject, task_id, in_reply_to, \
-     correlation_id, created_at, attachments";
+     correlation_id, created_at, attachments, external";
 
 /// Files one message may carry.
 const MAX_ATTACHMENTS: usize = 20;
@@ -39,6 +40,7 @@ const NOTIFICATION_BUFFER: usize = 1024;
 pub struct SqliteBroker {
     pool: SqlitePool,
     directory: Arc<dyn AgentDirectory>,
+    adapters: Arc<dyn AdapterDirectory>,
     credentials: Arc<dyn Credentials>,
     files: Arc<dyn FileStorage>,
     journal: Arc<dyn JournalWriter>,
@@ -50,6 +52,7 @@ impl SqliteBroker {
     pub async fn new(
         pool: SqlitePool,
         directory: Arc<dyn AgentDirectory>,
+        adapters: Arc<dyn AdapterDirectory>,
         credentials: Arc<dyn Credentials>,
         files: Arc<dyn FileStorage>,
         journal: Arc<dyn JournalWriter>,
@@ -61,6 +64,7 @@ impl SqliteBroker {
         Ok(Self {
             pool,
             directory,
+            adapters,
             credentials,
             files,
             journal,
@@ -82,6 +86,18 @@ impl SqliteBroker {
 
     /// Checks that `caller` may write to `to` (D50).
     async fn authorize(&self, caller: &Caller, to: &Alias) -> Result<()> {
+        // Senders that read nothing (D107, D110): say so, rather than "not found".
+        if to.as_str() == SCHEDULER {
+            return Err(Error::Forbidden(
+                "nobody reads messages to @scheduler: send results to whoever the message names"
+                    .to_owned(),
+            ));
+        }
+        if self.adapters.adapter(to).await.is_ok() {
+            return Err(Error::Forbidden(format!(
+                "{to} is an adapter: it brings events in and reads nothing"
+            )));
+        }
         match caller {
             Caller::Agent { alias, .. } => {
                 let card = self.directory.agent(alias).await?;
@@ -93,9 +109,20 @@ impl SqliteBroker {
             }
             // The operator may write to any agent.
             Caller::Operator { .. } => self.directory.agent(to).await.map(drop),
-            // Only code inside the control plane makes an adapter caller so far: Scheduler
-            // (D107). Registered adapters with their own limits come with D71.
-            Caller::Adapter { .. } => self.directory.agent(to).await.map(drop),
+            // Scheduler is inside the control plane and has no credential: it writes to any
+            // agent the operator scheduled (D107). A registered adapter, like an agent, only
+            // to those it may (D71, D110).
+            Caller::Adapter { alias } if alias.as_str() == SCHEDULER => {
+                self.directory.agent(to).await.map(drop)
+            }
+            Caller::Adapter { alias } => {
+                let adapter = self.adapters.adapter(alias).await?;
+                if adapter.allow_message_to.contains(to) {
+                    self.directory.agent(to).await.map(drop)
+                } else {
+                    Err(Error::Forbidden(format!("{alias} may not message {to}")))
+                }
+            }
         }
     }
 
@@ -200,7 +227,7 @@ impl SqliteBroker {
     async fn unread(&self, recipient: &Alias) -> Result<Vec<Message>> {
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT m.id, m.sender, m.recipient, m.body, m.subject, m.task_id,
-                    m.in_reply_to, m.correlation_id, m.created_at, m.attachments
+                    m.in_reply_to, m.correlation_id, m.created_at, m.attachments, m.external
              FROM messages m
              LEFT JOIN cursors c ON c.recipient = m.recipient AND c.session = m.session
              WHERE m.recipient = ? AND m.seq > COALESCE(c.up_to, 0)
@@ -280,6 +307,7 @@ impl MessageBroker for SqliteBroker {
             task_id: message.task_id,
             in_reply_to: message.in_reply_to,
             attachments,
+            external: matches!(caller, Caller::Adapter { alias } if alias.as_str() != SCHEDULER),
         };
         let attachments = serde_json::to_string(&stored.attachments)
             .map_err(|e| Error::Internal(e.to_string()))?;
@@ -287,8 +315,8 @@ impl MessageBroker for SqliteBroker {
         sqlx::query(
             "INSERT INTO messages
                  (id, sender, recipient, body, subject, task_id, in_reply_to, correlation_id,
-                  session, created_at, attachments)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  session, created_at, attachments, external)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(stored.id.to_string())
         .bind(stored.from.as_str())
@@ -301,6 +329,7 @@ impl MessageBroker for SqliteBroker {
         .bind(stored.session().to_string())
         .bind(stored.created_at.as_unix_millis())
         .bind(attachments)
+        .bind(stored.external)
         .execute(&self.pool)
         .await
         .map_err(internal)?;
@@ -807,6 +836,7 @@ struct Row {
     correlation_id: String,
     created_at: i64,
     attachments: String,
+    external: bool,
 }
 
 impl Row {
@@ -823,6 +853,7 @@ impl Row {
             created_at: Timestamp::from_unix_millis(self.created_at)?,
             attachments: serde_json::from_str(&self.attachments)
                 .map_err(|e| Error::Internal(e.to_string()))?,
+            external: self.external,
         })
     }
 }
