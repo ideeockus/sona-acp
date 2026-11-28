@@ -68,9 +68,27 @@ target/release/sapctl status
 
 Модель — из `sapctl models`: там те, для которых у Pi есть ключ. Карточку с другой моделью control plane не сохранит.
 
-`access` — группы инструментов: `read_files`, `write_files`, `shell`, `tasks`, `send_messages`. `shell` даёт `bash` без проверок Gateway: внутри контейнера агент делает что угодно (G4).
+`access` — группы инструментов: `read_files`, `write_files`, `shell`, `tasks`, `send_messages`, `files`. `shell` даёт `bash` без проверок Gateway: внутри контейнера агент делает что угодно (G4).
 
 Предохранители (D100) по умолчанию: 30 Run и $5 на цепочку, 20 пробуждений агента за 10 минут. Настраиваются в `[limits]`. Стоимость берётся из отчёта Pi; если Pi не знает цену модели, Run стоит $0 и денежный лимит не сработает.
+
+### Файлы
+
+File Storage (D106) хранит файлы в RustFS. Ключи придумай сам и держи в окружении, не в конфиге:
+
+```text
+export SONA_S3_ACCESS_KEY=… SONA_S3_SECRET_KEY=…
+docker compose -f deploy/compose.yaml up -d
+```
+
+В конфиг — адрес; control plane при старте берёт те же две переменные и сам создаёт бакет:
+
+```toml
+[storage]
+endpoint = "http://127.0.0.1:9000"
+```
+
+Агенту нужна группа `files`: тулы `file_upload` (файл из `/work` в хранилище), `file_download` (по id в `/work`) и `file_list`. Файл прикладывается к сообщению по id, в `send_message` это `files`. Оператор прикладывает файлы в Messages кнопкой Attach и скачивает вложения там же. Без `[storage]` файлы выключены.
 
 ## На VPS
 

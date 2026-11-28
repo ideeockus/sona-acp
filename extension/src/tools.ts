@@ -2,8 +2,10 @@
 // decide what the agent may do, and Gateway checks the grant first (D22).
 
 import { defineTool } from "@earendil-works/pi-coding-agent";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, extname } from "node:path";
 import { Type } from "typebox";
-import { call, session } from "./api.ts";
+import { call, download, session, upload } from "./api.ts";
 
 /** The context shows aliases with `@`, the API takes them without. */
 const alias = (value: string) => value.replace(/^@/, "");
@@ -29,6 +31,9 @@ const sendMessage = defineTool({
     subject: Type.Optional(Type.String()),
     task_id: Type.Optional(Id("The task the message is about")),
     in_reply_to: Type.Optional(Id("The message this one answers")),
+    files: Type.Optional(
+      Type.Array(Id("A file id"), { description: "Files to attach, by id from file_upload or file_list" }),
+    ),
   }),
   async execute(_id, p) {
     const message = {
@@ -37,6 +42,7 @@ const sendMessage = defineTool({
       subject: p.subject ?? null,
       task_id: p.task_id ?? null,
       in_reply_to: p.in_reply_to ?? null,
+      attachments: p.files ?? [],
     };
     return reply(await call("POST", "/v1/messages", message));
   },
@@ -111,4 +117,66 @@ const taskUpdate = defineTool({
   },
 });
 
-export const tools = [sendMessage, readMessages, taskCreate, taskGet, taskUpdate];
+/** Enough for a browser or a reader to tell what came; anything else is bytes. */
+const TYPES: Readonly<Record<string, string>> = {
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".csv": "text/csv",
+  ".json": "application/json",
+  ".html": "text/html",
+  ".css": "text/css",
+  ".js": "text/javascript",
+  ".ts": "text/plain",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".zip": "application/zip",
+};
+
+// The path was resolved and checked by Gateway before the call (index.ts).
+const fileUpload = defineTool({
+  name: "file_upload",
+  label: "Upload file",
+  description:
+    "Store a file from your workdir in File Storage. Returns its id: attach it to a message with send_message's files.",
+  parameters: Type.Object({
+    path: Type.String({ description: "The file in your workdir" }),
+  }),
+  async execute(_id, p) {
+    const content = await readFile(p.path);
+    const type = TYPES[extname(p.path).toLowerCase()] ?? "application/octet-stream";
+    return reply(await upload(basename(p.path), type, content));
+  },
+});
+
+const fileDownload = defineTool({
+  name: "file_download",
+  label: "Download file",
+  description: "Save a file from File Storage into your workdir, e.g. an attachment of a message you got.",
+  parameters: Type.Object({
+    file_id: Id("The file's id"),
+    path: Type.String({ description: "Where to save it in your workdir" }),
+  }),
+  async execute(_id, p) {
+    const content = await download(p.file_id);
+    await mkdir(dirname(p.path), { recursive: true });
+    await writeFile(p.path, content);
+    return reply({ saved: p.path, size: content.length });
+  },
+});
+
+const fileList = defineTool({
+  name: "file_list",
+  label: "List files",
+  description: "The files you may read: yours and those attached to messages to you, newest first.",
+  parameters: Type.Object({}),
+  async execute() {
+    return reply(await call("GET", "/v1/files"));
+  },
+});
+
+export const tools = [sendMessage, readMessages, taskCreate, taskGet, taskUpdate, fileUpload, fileDownload, fileList];

@@ -7,6 +7,7 @@ export const ACCESS: { key: Access; label: string; tools: string; note: string }
   { key: "shell", label: "Shell", tools: "bash", note: "Runs anything inside its container. Gateway does not check the commands." },
   { key: "tasks", label: "Tasks", tools: "task_create, task_get, task_update", note: "Create tasks and work on those it takes part in." },
   { key: "send_messages", label: "Send messages", tools: "send_message", note: "To the agents chosen below." },
+  { key: "files", label: "Files", tools: "file_upload, file_download, file_list", note: "Between its workdir and File Storage; attach files to messages." },
 ];
 
 export function accessLabel(key: Access): string {

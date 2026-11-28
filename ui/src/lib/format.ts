@@ -48,6 +48,12 @@ export function modelLabel(m: { name: string; context_window: number; price: { i
   return parts.join(" · ");
 }
 
+export function bytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function tokens(count: number): string {
   return count < 1000 ? `${count}` : `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}k`;
 }

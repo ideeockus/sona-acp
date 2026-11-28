@@ -32,3 +32,10 @@ agent_network = "sona-agents"
 # cost_per_chain_usd = 5.0
 # wakes_per_agent = 20
 # wake_window_minutes = 10
+
+# File Storage (D106) on RustFS from deploy/compose.yaml. The keys come from
+# SONA_S3_ACCESS_KEY and SONA_S3_SECRET_KEY, the same two compose reads.
+# Without [storage], files are off.
+# [storage]
+# endpoint = "http://127.0.0.1:9000"
+# bucket = "sona"

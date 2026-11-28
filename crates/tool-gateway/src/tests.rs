@@ -19,7 +19,12 @@ impl AgentDirectory for Directory {
                 provider: "fake".to_owned(),
                 id: "fake".to_owned(),
             },
-            access: vec![Access::ReadFiles, Access::WriteFiles, Access::SendMessages],
+            access: vec![
+                Access::ReadFiles,
+                Access::WriteFiles,
+                Access::SendMessages,
+                Access::Files,
+            ],
             allow_message_to: Vec::new(),
             prompt: String::new(),
             hue: None,
@@ -222,4 +227,21 @@ async fn only_agents_are_checked() {
 #[tokio::test]
 async fn reading_messages_needs_no_grant() {
     assert_eq!(verdict("read_messages", None).await, Verdict::Allow);
+}
+
+#[tokio::test]
+async fn files_move_between_the_workdir_and_storage_only() {
+    for tool in ["file_upload", "file_download"] {
+        assert_eq!(
+            verdict(tool, Some("/work/calculator/index.html")).await,
+            Verdict::Allow
+        );
+        assert!(
+            is_deny(&verdict(tool, Some("/agent/skills/x/SKILL.md")).await),
+            "{tool}"
+        );
+        assert!(is_deny(&verdict(tool, Some("/etc/passwd")).await), "{tool}");
+        assert!(is_deny(&verdict(tool, None).await), "{tool}");
+    }
+    assert_eq!(verdict("file_list", None).await, Verdict::Allow);
 }

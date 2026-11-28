@@ -11,6 +11,9 @@ export const FILE_TOOLS: Readonly<Record<string, boolean>> = {
   ls: true,
   grep: true,
   find: true,
+  // Ours, to and from File Storage (D106).
+  file_upload: false,
+  file_download: false,
 };
 
 /**

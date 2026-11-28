@@ -16,7 +16,7 @@ export interface SessionInfo {
   expires_at: Time | null;
 }
 
-export type Access = "read_files" | "write_files" | "shell" | "tasks" | "send_messages";
+export type Access = "read_files" | "write_files" | "shell" | "tasks" | "send_messages" | "files";
 export type AgentState = "active" | "disabled";
 
 /** A model Pi has a key for (D104); prices are dollars per million tokens. */
@@ -107,7 +107,21 @@ export type Step =
 
 export type TranscriptEntry = Step & { at: Time };
 
+/** A file on a message (D106): fetched from /v1/files/{id}. */
+export interface Attachment {
+  id: string;
+  name: string;
+  size: number;
+}
+
+export interface FileInfo extends Attachment {
+  content_type: string;
+  owner: Alias;
+  created_at: Time;
+}
+
 export interface Message {
+  attachments: Attachment[];
   id: string;
   from: Alias;
   to: Alias;
@@ -125,6 +139,7 @@ export interface NewMessage {
   subject: string | null;
   task_id: string | null;
   in_reply_to: string | null;
+  attachments: string[];
 }
 
 export interface Conversation {

@@ -5,12 +5,12 @@
   import Ring from "../components/Ring.svelte";
   import { look } from "../lib/agent";
   import { api, ApiError } from "../lib/api";
-  import { firstLine, since, sessionLabel, short } from "../lib/format";
+  import { bytes, firstLine, since, sessionLabel, short } from "../lib/format";
   import { markdown } from "../lib/markdown";
   import { poll } from "../lib/poll.svelte";
   import { navigate } from "../lib/router.svelte";
   import { session as me } from "../lib/session.svelte";
-  import type { Agent, Conversation, Message, NewMessage, Status, Task, Thread } from "../lib/types";
+  import type { Agent, Attachment, Conversation, FileInfo, Message, NewMessage, Status, Task, Thread } from "../lib/types";
 
   /** `session` is a thread's session key, or "new" for a thread not started yet. */
   let { alias = null, session = null }: { alias?: string | null; session?: string | null } = $props();
@@ -29,6 +29,8 @@
   let now = $state(Date.now());
 
   let body = $state("");
+  /** Files picked for the next message, uploaded when it is sent. */
+  let picked = $state<File[]>([]);
   let sending = $state(false);
   let error = $state<string | null>(null);
 
@@ -110,6 +112,16 @@
     event?.preventDefault();
     if (!alias || !body.trim()) return;
     const last = messages.at(-1);
+    sending = true;
+    error = null;
+    let attachments: string[];
+    try {
+      attachments = (await Promise.all(picked.map((f) => api.upload<FileInfo>(f)))).map((f) => f.id);
+    } catch (e) {
+      error = e instanceof ApiError ? (e.body.detail ?? e.body.kind) : "Could not upload.";
+      sending = false;
+      return;
+    }
     const message: NewMessage = {
       to: alias,
       body: body.trim(),
@@ -117,12 +129,12 @@
       task_id: starting ? null : (thread?.first.task_id ?? null),
       // Continues this thread's chain (D41); a new thread starts a chain of its own.
       in_reply_to: starting ? null : (last?.id ?? null),
+      attachments,
     };
-    sending = true;
-    error = null;
     try {
       const sent = await api.post<Message>("/messages", message);
       body = "";
+      picked = [];
       if (starting) {
         const key = sent.task_id ? `task-${sent.task_id}` : `chain-${sent.correlation_id}`;
         navigate(`/messages/${alias}/${key}`);
@@ -141,6 +153,15 @@
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     event.preventDefault();
     void send();
+  }
+
+  const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+  const fileUrl = (a: Attachment) => `/v1/files/${a.id}`;
+
+  function pick(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    picked = [...picked, ...Array.from(input.files ?? [])];
+    input.value = "";
   }
 
   async function act(path: string) {
@@ -238,6 +259,19 @@
               <!-- The agent's Markdown; markdown() leaves raw HTML as text. -->
               <div class="body md">{@html markdown(m.body)}</div>
             {/if}
+            {#if m.attachments.length > 0}
+              <ul class="files">
+                {#each m.attachments as a (a.id)}
+                  <li>
+                    {#if IMAGE.test(a.name)}
+                      <a href={fileUrl(a)} target="_blank" rel="noopener noreferrer"><img src={fileUrl(a)} alt={a.name} /></a>
+                    {/if}
+                    <a class="mono small" href={fileUrl(a)} download={a.name}>↓ {a.name}</a>
+                    <span class="mono small muted">{bytes(a.size)}</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
           </li>
         {/each}
         {#if session && working(session)}
@@ -277,7 +311,22 @@
             bind:value={body}
             onkeydown={onKey}
           ></textarea>
+          {#if picked.length > 0}
+            <ul class="files">
+              {#each picked as f, i (i)}
+                <li>
+                  <span class="mono small">{f.name}</span>
+                  <span class="mono small muted">{bytes(f.size)}</span>
+                  <button type="button" class="text-button quiet" onclick={() => (picked = picked.filter((_, j) => j !== i))}>Remove</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
           <div class="send">
+            <label class="attach text-button quiet">
+              Attach
+              <input type="file" multiple onchange={pick} />
+            </label>
             <span class="muted small">Enter sends · Shift+Enter for a new line</span>
             {#if error}<span class="error" role="alert">{error}</span>{/if}
             <button class="primary" disabled={sending || !body.trim()}>Send</button>
@@ -508,6 +557,33 @@
     display: flex;
     align-items: center;
     gap: 12px;
+  }
+  .files {
+    margin: 4px 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .files li {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .files img {
+    display: block;
+    max-width: 240px;
+    max-height: 180px;
+    border: 1px solid var(--line);
+  }
+  .attach {
+    flex-direction: row;
+    cursor: pointer;
+  }
+  .attach input {
+    display: none;
   }
   .send .primary {
     margin-left: auto;

@@ -7,7 +7,8 @@ use std::path::{Component, Path};
 /// `bash` is bounded by the container (D21), our own tools by their components.
 fn roots(tool: &str) -> Option<&'static [&'static str]> {
     match tool {
-        "write" | "edit" => Some(&[WORKDIR]),
+        // File Storage moves files between the workdir and storage, nowhere else (D106).
+        "write" | "edit" | "file_upload" | "file_download" => Some(&[WORKDIR]),
         "read" | "grep" | "find" | "ls" => Some(&[WORKDIR, SKILLS_DIR]),
         _ => None,
     }

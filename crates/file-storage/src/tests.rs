@@ -182,7 +182,10 @@ async fn others_see_a_file_only_once_it_is_shared_with_them() {
         .unwrap();
     assert_eq!(shared, std::slice::from_ref(&file));
     assert_eq!(s.files.download(&manager, file.id).await.unwrap().1, b"hi");
-    assert_eq!(s.files.list(&manager).await.unwrap(), std::slice::from_ref(&file));
+    assert_eq!(
+        s.files.list(&manager).await.unwrap(),
+        std::slice::from_ref(&file)
+    );
     // Sharing twice is fine.
     s.files
         .share(&agent("coder"), &[file.id], &alias("manager"))

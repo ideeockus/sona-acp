@@ -72,6 +72,7 @@ pub enum Access {
     Shell,
     Tasks,
     SendMessages,
+    Files,
 }
 
 impl Access {
@@ -82,6 +83,7 @@ impl Access {
             Self::Shell => &["bash"],
             Self::Tasks => &["task_create", "task_get", "task_update"],
             Self::SendMessages => &["send_message"],
+            Self::Files => &["file_upload", "file_download", "file_list"],
         }
     }
 }
